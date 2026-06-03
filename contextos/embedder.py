@@ -38,8 +38,15 @@ class Embedder:
         if self._model is not None:
             return
 
-        from sentence_transformers import SentenceTransformer
         import os
+        import logging as _logging
+        # Suppress noisy progress output from transformers/tokenizers
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        _logging.getLogger("sentence_transformers").setLevel(_logging.ERROR)
+        _logging.getLogger("transformers").setLevel(_logging.ERROR)
+
+        from sentence_transformers import SentenceTransformer
+        import contextlib, io
 
         local_copy = self.cache_dir / self.model_name.replace("/", "_")
 
@@ -47,14 +54,16 @@ class Embedder:
         if local_copy.exists() and any(local_copy.iterdir()):
             logger.info("Loading model from local copy: %s", local_copy)
             try:
-                self._model = SentenceTransformer(str(local_copy))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self._model = SentenceTransformer(str(local_copy))
                 return
             except Exception as exc:
                 logger.warning("Local copy load failed (%s) — loading from HF cache", exc)
 
-        # Option 2: load from HF cache / download (will use cached if already downloaded)
+        # Option 2: load from HF cache / download
         logger.info("Loading model '%s' (downloading if needed)…", self.model_name)
-        self._model = SentenceTransformer(self.model_name)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._model = SentenceTransformer(self.model_name)
 
         # Save a local copy for explicit offline tracking
         try:

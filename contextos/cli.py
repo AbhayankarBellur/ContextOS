@@ -327,6 +327,9 @@ def cmd_search(
     brand_rule("search")
     cfg = _cfg()
     with console.status(f"[cyan]{ICONS['spin']} Searching…[/cyan]"):
+        import os, logging as _logging
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        _logging.getLogger("sentence_transformers").setLevel(_logging.ERROR)
         emb = Embedder(cfg.embeddings_dir)
         qv  = emb.embed_query(query)
         st  = VectorStore(cfg.lancedb_dir)

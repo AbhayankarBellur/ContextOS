@@ -12,6 +12,12 @@ build/
 venv/
 env/
 
+# Test / CI artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.pyc
+
 # OS
 .DS_Store
 Thumbs.db
@@ -20,3 +26,11 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.swo
+
+# Generated outputs (run context export to regenerate)
+*-export.md
+*-export.json
+
+# User-specific agent configs (use mcp.json.example as template)
+mcp.json
