@@ -1340,6 +1340,276 @@ def cmd_setup(
         warn("No new files written — all targets already exist.")
 
 
+# ── session commands ──────────────────────────────────────────────────────────
+
+session_app = typer.Typer(help="Agent session tracking and memory")
+app.add_typer(session_app, name="session")
+
+@session_app.command("start")
+def session_start(name: Optional[str] = typer.Option(None, "--name", "-n", help="Session label")):
+    """Start a new agent session for tracking context and decisions."""
+    from contextos.session import create_session
+    brand_rule("session start")
+    cfg = _cfg()
+    sessions_dir = cfg.contextos_dir / "sessions"
+    s = create_session(sessions_dir, name)
+    t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    t.add_column("k", style="dim", width=14); t.add_column("v", style="bold")
+    t.add_row("Session ID",   s["id"])
+    t.add_row("Name",         s["name"])
+    t.add_row("Started",      s["started_at"][:19])
+    console.print(Panel(t, title=f"[success]{ICONS['success']} Session Started[/success]",
+                        border_style="green", padding=(0,2)))
+    console.print(f"\n  [dim]Track events:[/dim]  [bold]context session event {s['id']} <type> <text>[/bold]")
+    console.print(f"  [dim]End session:[/dim]   [bold]context session end {s['id']}[/bold]")
+
+
+@session_app.command("end")
+def session_end(
+    session_id: str = typer.Argument(..., help="Session ID to end"),
+    export: bool = typer.Option(True, "--export/--no-export", help="Export summary to vault"),
+):
+    """End a session, generate summary, optionally export to vault."""
+    from contextos.session import end_session
+    cfg = _cfg()
+    sessions_dir = cfg.contextos_dir / "sessions"
+    vault_dir    = cfg.vault_paths[0] / "context" if cfg.vault_paths else None
+    try:
+        s = end_session(sessions_dir, session_id, vault_export_dir=vault_dir if export else None)
+    except ValueError as e:
+        error_panel("Session Error", str(e)); raise typer.Exit(1)
+    summary = s.get("summary", {})
+    t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    t.add_column("k", style="dim", width=22); t.add_column("v", style="bold")
+    t.add_row("Duration",        summary.get("duration","—"))
+    t.add_row("Events",          str(summary.get("total_events",0)))
+    t.add_row("Searches",        str(len(summary.get("searches",[]))))
+    t.add_row("Files changed",   str(len(summary.get("files_changed",[]))))
+    t.add_row("Tasks completed", str(len(summary.get("tasks_completed",[]))))
+    if export and vault_dir:
+        t.add_row("Vault export",    "✓ written to vault/context/")
+    console.print(Panel(t, title=f"[success]{ICONS['success']} Session Ended[/success]",
+                        border_style="green", padding=(0,2)))
+
+
+@session_app.command("event")
+def session_event(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    event_type: str = typer.Argument(..., help="Type: task_started|task_completed|decision_made|note|file_changed"),
+    text: str = typer.Argument(..., help="Event description or text"),
+):
+    """Log an event to an active session."""
+    from contextos.session import add_event
+    cfg = _cfg()
+    sessions_dir = cfg.contextos_dir / "sessions"
+    ok_flag = add_event(sessions_dir, session_id, event_type, {"text": text, "task": text})
+    if ok_flag:
+        ok(f"Event logged: [{event_type}] {text[:60]}")
+    else:
+        error_panel("Event Failed", f"Session {session_id} not found or already ended")
+        raise typer.Exit(1)
+
+
+@session_app.command("list")
+def session_list():
+    """List recent agent sessions."""
+    from contextos.session import list_sessions
+    brand_rule("session list")
+    cfg = _cfg()
+    sessions_dir = cfg.contextos_dir / "sessions"
+    sessions = list_sessions(sessions_dir, limit=15)
+    if not sessions:
+        empty_state("No sessions yet.", "context session start"); return
+    t = Table(title="[bold]Agent Sessions[/bold]", box=box.ROUNDED, border_style="cyan")
+    t.add_column("ID", style="cyan", width=10)
+    t.add_column("Name", style="bold")
+    t.add_column("Started", style="dim")
+    t.add_column("Duration", style="dim", width=10)
+    t.add_column("Events", justify="right", width=8)
+    t.add_column("Status", width=10)
+    for s in sessions:
+        summary  = s.get("summary") or {}
+        dur      = summary.get("duration","—")
+        ended    = s.get("ended_at")
+        status   = f"[success]ended[/success]" if ended else f"[green]active[/green]"
+        t.add_row(s["id"], s.get("name",""), s.get("started_at","")[:16],
+                  dur, str(len(s.get("events",[]))), status)
+    console.print(); console.print(t)
+
+
+@session_app.command("summary")
+def session_summary(
+    session_id: Optional[str] = typer.Argument(None, help="Session ID (default: last session)"),
+):
+    """Show summary of a session. Defaults to the most recent session."""
+    from contextos.session import get_session, get_last_session
+    brand_rule("session summary")
+    cfg = _cfg()
+    sessions_dir = cfg.contextos_dir / "sessions"
+    s = get_session(sessions_dir, session_id) if session_id else get_last_session(sessions_dir)
+    if not s:
+        empty_state("No session found.", "context session list"); return
+
+    summary = s.get("summary") or {}
+    t = Table(show_header=False, box=box.ROUNDED, border_style="cyan", min_width=52, padding=(0,1))
+    t.add_column("k", style="dim", width=22); t.add_column("v", style="bold")
+    t.add_row("Session", s.get("name",""))
+    t.add_row("ID", s["id"])
+    t.add_row("Started", s.get("started_at","")[:19])
+    t.add_row("Duration", summary.get("duration","—"))
+    t.add_row("Total events", str(summary.get("total_events",0)))
+    console.print(Panel(t, title="[bold]Session Summary[/bold]", border_style="cyan"))
+
+    if summary.get("tasks_completed"):
+        console.print("\n[bold]Tasks completed:[/bold]")
+        for task in summary["tasks_completed"]:
+            console.print(f"  [success]{ICONS['success']}[/success] {task}")
+
+    if summary.get("decisions"):
+        console.print("\n[bold]Decisions made:[/bold]")
+        for d in summary["decisions"]:
+            console.print(f"  [cyan]•[/cyan] {d}")
+
+    if summary.get("files_changed"):
+        console.print("\n[bold]Files changed:[/bold]")
+        for f in summary["files_changed"]:
+            console.print(f"  [dim]{f}[/dim]")
+
+    if summary.get("searches"):
+        console.print("\n[bold]Searches:[/bold]")
+        for q in summary["searches"][:8]:
+            console.print(f"  [dim]›[/dim] {q}")
+
+
+# ── context pull (connectors) ─────────────────────────────────────────────────
+
+@app.command("pull")
+def cmd_pull(
+    connector: str = typer.Argument(..., help="Connector: github | openapi | json"),
+    source: Optional[str] = typer.Option(None, "--source", "-s", help="Source: repo, file path, or URL"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name to tag docs with"),
+    pull_type: Optional[str] = typer.Option(None, "--type", "-t", help="Connector-specific type filter"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: .contextos/pulled/)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite unchanged files"),
+):
+    """Pull external data into the vault. Supports: github, openapi, json."""
+    from contextos.connectors import CONNECTORS
+    brand_rule("pull")
+    cfg = _cfg()
+
+    conn_cls = CONNECTORS.get(connector.lower())
+    if not conn_cls:
+        error_panel("Unknown Connector", connector,
+                    f"Available: {', '.join(CONNECTORS.keys())}")
+        raise typer.Exit(1)
+
+    proj = project or cfg.project_name
+    conn_config: dict = {}
+    if source:      conn_config["source"] = source
+    if source:      conn_config["repo"]   = source   # github alias
+    if pull_type:   conn_config["type"]   = pull_type
+
+    conn = conn_cls(project=proj, config=conn_config)
+
+    out_dir = Path(output) if output else (cfg.contextos_dir / "pulled" / connector / proj)
+
+    with console.status(f"[cyan]{ICONS['spin']} Pulling from {connector}…[/cyan]"):
+        try:
+            result = conn.pull(out_dir, force=force)
+        except Exception as exc:
+            error_panel("Pull Failed", str(exc),
+                        f"Check your config for the {connector} connector")
+            raise typer.Exit(1)
+
+    t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    t.add_column("k", style="dim", width=16); t.add_column("v", style="bold")
+    t.add_row("Connector",   connector)
+    t.add_row("Project",     result["project"])
+    t.add_row("Total docs",  str(result["total"]))
+    t.add_row("Written",     f"[green]{result['written']}[/green]")
+    t.add_row("Skipped",     f"[dim]{result['skipped']} (unchanged)[/dim]")
+    t.add_row("Output dir",  str(result["output_dir"]))
+
+    console.print(Panel(t, title=f"[success]{ICONS['success']} Pull Complete — {connector}[/success]",
+                        border_style="green", padding=(0,1)))
+
+    if result["written"] > 0:
+        next_action(f"context import {out_dir}  &&  context index",
+                    "Import and index the pulled documents")
+
+
+# ── context export ────────────────────────────────────────────────────────────
+
+@app.command("export")
+def cmd_export(
+    project: str = typer.Argument(..., help="Project name to export"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path"),
+    fmt: str = typer.Option("markdown", "--format", help="Format: markdown | json"),
+):
+    """Export an entire project vault as a single Markdown or JSON file."""
+    brand_rule("export")
+    cfg = _cfg()
+    from contextos.vault import load_registry
+    registry = load_registry(cfg.metadata_dir)
+    project_docs = [r for r in registry if r.get("project") == project]
+
+    if not project_docs:
+        empty_state(f'No documents found for project "{project}"',
+                    "context projects"); raise typer.Exit(0)
+
+    out_path = Path(output) if output else Path(f"{project}-export.{'md' if fmt=='markdown' else 'json'}")
+
+    with console.status(f"[cyan]{ICONS['spin']} Exporting {len(project_docs)} docs…[/cyan]"):
+        if fmt == "json":
+            import datetime
+            export_data = {"project": project, "exported_at": datetime.datetime.now().isoformat(),
+                           "documents": []}
+            for rec in project_docs:
+                fp = Path(rec["filepath"])
+                export_data["documents"].append({
+                    "title": rec["title"], "type": rec["type"],
+                    "filepath": rec["filepath"],
+                    "content": fp.read_text(encoding="utf-8") if fp.exists() else ""
+                })
+            out_path.write_text(json.dumps(export_data, indent=2))
+        else:
+            # Single Markdown file
+            lines = [f"# {project} — Vault Export\n",
+                     f"*Exported {__import__('time').strftime('%Y-%m-%d %H:%M')} — {len(project_docs)} documents*\n\n---\n"]
+            for rec in sorted(project_docs, key=lambda r: (r.get("type",""), r.get("title",""))):
+                fp = Path(rec["filepath"])
+                if fp.exists():
+                    lines.append(f"\n\n## {rec['title']}\n\n")
+                    lines.append(f"*Type: {rec['type']} | File: {fp.name}*\n\n")
+                    # Strip frontmatter for export
+                    content = fp.read_text(encoding="utf-8")
+                    if content.startswith("---"):
+                        parts = content.split("---", 2)
+                        content = parts[2].strip() if len(parts) >= 3 else content
+                    lines.append(content)
+                    lines.append("\n\n---")
+            out_path.write_text("\n".join(lines), encoding="utf-8")
+
+    console.print(Panel(
+        f"  [dim]Project:[/dim]   [bold]{project}[/bold]\n"
+        f"  [dim]Documents:[/dim] [bold]{len(project_docs)}[/bold]\n"
+        f"  [dim]Format:[/dim]    [bold]{fmt}[/bold]\n"
+        f"  [dim]Output:[/dim]    [bold cyan]{out_path}[/bold cyan]\n"
+        f"  [dim]Size:[/dim]      [bold]{_fmt_size(out_path.stat().st_size)}[/bold]",
+        title=f"[success]{ICONS['success']} Export Complete[/success]",
+        border_style="green", padding=(0,2)))
+
+
+# ── context dashboard ─────────────────────────────────────────────────────────
+
+@app.command("dashboard")
+def cmd_dashboard():
+    """Launch the full-screen Textual TUI dashboard."""
+    cfg = _cfg()
+    from contextos.dashboard import run_dashboard
+    run_dashboard(cfg)
+
+
 # ── cache commands ────────────────────────────────────────────────────────────
 
 @cache_app.command("ls")

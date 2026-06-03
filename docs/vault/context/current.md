@@ -9,41 +9,55 @@ tags:
   - current
 ---
 
-# Current State — ContextOS v1.0.0-rc1
+# Current State — ContextOS v1.2.0-rc1
 
-## Completed
+## Completed — v1.0 (Week 1 Foundation)
 
 - [x] Full schema.py — all Pydantic v2 models
-- [x] config.py — pydantic-settings, .contextos/ directory management
-- [x] vault.py — filesystem scanner, frontmatter parser, registry
-- [x] chunker.py — MarkdownHeaderTextSplitter, min/max token merging
-- [x] embedder.py — BAAI/bge-small-en-v1.5, local cache, offline after first run
-- [x] store.py — LanceDB upsert, cosine search, metadata pre-filter
-- [x] graph.py — NetworkX builder, save/load JSON, 1-hop expansion
-- [x] retrieval.py — full pipeline, priority rerank, token budget, context assembly
-- [x] auth.py — ctx_ tokens, SHA-256 hash, validate, revoke, list
-- [x] api.py — FastAPI, 127.0.0.1 only, /health /search /context /documents /graph
-- [x] memory.py — disk breakdown, purge, archive, reset, clear embeddings
-- [x] cli.py — 15 commands with premium Rich UI
-- [x] AGENTS.md — single source of truth for AI agents
-- [x] CLAUDE.md — Claude Code integration template
-- [x] Kiro hook — .kiro/hooks/contextos-prefetch.json
-- [x] docs/vault — self-documenting knowledge vault
+- [x] config.py, vault.py, chunker.py, embedder.py, store.py, graph.py
+- [x] retrieval.py — priority rerank, token budget, context assembly
+- [x] auth.py — ctx_ tokens, SHA-256 hash only
+- [x] api.py — FastAPI 127.0.0.1 only
+- [x] memory.py — disk breakdown, purge, archive, reset
+- [x] cli.py — 15 commands, premium Rich UI
+- [x] AGENTS.md, CLAUDE.md, Kiro hook, docs/vault
+
+## Completed — v1.1 (Week 1 Performance + Integration)
+
+- [x] Incremental index — content hash skip (10-100x faster)
+- [x] MCP server — 6 native tools (search_knowledge, get_context, grep_codebase, read_file, get_graph, get_status)
+- [x] Symbol index — Python AST + JS/TS regex (190 symbols, 17 files)
+- [x] Smart compression — sumy TF-IDF extractive, no LLM
+- [x] Live watch mode — watchfiles per-file re-index
+- [x] context context, context diff, context projects, context about, context symbols, context mcp, context setup
+- [x] Agent templates — .cursorrules, mcp.json, .continue/config.json, copilot-instructions.md
+- [x] 26/26 tests passing
+
+## Completed — v1.2 (Week 2 Enterprise Features)
+
+- [x] session.py — full agent session lifecycle (create, event, end, summary, export to vault)
+- [x] connectors/ — pluggable external data sources (BaseConnector + registry)
+- [x] connectors/github.py — GitHub Issues + Wiki → vault Markdown
+- [x] connectors/openapi.py — OpenAPI/Swagger spec → architecture docs
+- [x] connectors/json_source.py — local JSON/YAML → vault docs (package.json, pyproject.toml, generic)
+- [x] dashboard.py — full-screen Textual TUI (projects, health, sessions, inline search)
+- [x] API: /session/start, /session/:id/event, /session/:id/end, /session/last, /session/active, /pull
+- [x] CLI: context session start|end|event|list|summary, context pull, context export, context dashboard
 
 ## Active Focus
 
-- Memory management CLI commands (context memory *)
-- CLI UI/UX polish to match Claude Code / Vercel CLI quality
-- context doctor command for setup validation
-- Git repo polish for public release
+- Final test coverage (35+ tests)
+- AGENTS.md update for v1.2 commands
+- v1.2.0-rc1 release commit and push
 
-## Known Issues
+## CLI Command Count
 
-- Port 8080 blocked on some Windows machines — default changed to 8765 recommended
-- LanceDB `indexed` count returns 0 from /health (lazy load) — fix: eager init on serve startup
-- Windows path separators in filepaths need normalisation for display
+27 commands across: init, import, index, search, serve, status, graph, grep, read,
+tree, changelog, doctor, context, diff, projects, about, symbols, mcp, setup,
+session (5 sub), pull, export, dashboard, token (3 sub), memory (6 sub), cache (2 sub)
 
-## Architecture Decisions in Flight
+## API Endpoint Count
 
-- Consider making default port 8765 to avoid conflicts with common dev servers
-- Memory archive format: currently JSON export — consider keeping embeddings in archive for instant restore
+18 endpoints: /health, /search, /context, /graph, /documents, /watcher,
+/session/start, /session/:id/event, /session/:id/end, /session/last, /session/active,
+/pull, + v1.1 endpoints

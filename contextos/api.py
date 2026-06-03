@@ -125,15 +125,19 @@ def health():
 
 
 @app.post("/search", response_model=SearchResponse)
-def search(request: SearchRequest, _token=Depends(require_token)):
+def search(
+    request: SearchRequest,
+    session_id: Optional[str] = None,
+    _token=Depends(require_token),
+):
     """Primary retrieval endpoint. Agents call this to find relevant document chunks."""
     from contextos.retrieval import search as do_search
 
     embedder = get_embedder()
-    store = get_store()
-    graph = get_graph() if request.include_graph else None
+    store    = get_store()
+    graph    = get_graph() if request.include_graph else None
 
-    return do_search(
+    result = do_search(
         query=request.query,
         embedder=embedder,
         store=store,
@@ -145,21 +149,33 @@ def search(request: SearchRequest, _token=Depends(require_token)):
         include_graph=request.include_graph,
     )
 
+    # Log to session if provided
+    if session_id:
+        try:
+            from contextos.session import log_search
+            cfg = get_config()
+            log_search(cfg.contextos_dir / "sessions", session_id,
+                       request.query, len(result.results))
+        except Exception:
+            pass
+
+    return result
+
 
 @app.post("/context", response_model=ContextResponse)
-def context(request: ContextRequest, _token=Depends(require_token)):
-    """
-    Assemble a ready-to-paste context block.
-    Applies priority ordering and token budget.
-    This is the primary endpoint for agent pre-task context injection.
-    """
+def context(
+    request: ContextRequest,
+    session_id: Optional[str] = None,
+    _token=Depends(require_token),
+):
+    """Assemble a ready-to-paste context block for an agent task."""
     from contextos.retrieval import assemble_context
 
     embedder = get_embedder()
-    store = get_store()
-    graph = get_graph()
+    store    = get_store()
+    graph    = get_graph()
 
-    return assemble_context(
+    result = assemble_context(
         query=request.query,
         embedder=embedder,
         store=store,
@@ -168,6 +184,18 @@ def context(request: ContextRequest, _token=Depends(require_token)):
         max_tokens=request.max_tokens,
         priority_order=request.priority_order,
     )
+
+    # Log to session if provided
+    if session_id:
+        try:
+            from contextos.session import log_context
+            cfg = get_config()
+            log_context(cfg.contextos_dir / "sessions", session_id,
+                        request.query, result.token_estimate)
+        except Exception:
+            pass
+
+    return result
 
 
 @app.get("/graph")
@@ -205,6 +233,112 @@ def list_documents(
         status_filter=status,
     )
     return {"documents": docs, "count": len(docs)}
+
+
+# ---------------------------------------------------------------------------
+# Watcher status
+# ---------------------------------------------------------------------------
+
+@app.get("/watcher")
+def watcher_status_endpoint(_token=Depends(require_token)):
+    """Return live watch mode status."""
+    try:
+        from contextos.watcher import watcher_status
+        return watcher_status()
+    except Exception:
+        return {"active": False}
+
+
+# ---------------------------------------------------------------------------
+# Session endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/session/start")
+def session_start_ep(
+    name: Optional[str] = None,
+    _token=Depends(require_token),
+):
+    """Start a new agent session."""
+    from contextos.session import create_session
+    cfg = get_config()
+    session = create_session(cfg.contextos_dir / "sessions", name)
+    return {"session_id": session["id"], "name": session["name"], "started_at": session["started_at"]}
+
+
+@app.post("/session/{session_id}/event")
+def session_event_ep(
+    session_id: str,
+    event_type: str,
+    payload: dict,
+    _token=Depends(require_token),
+):
+    """Log an event to an active session."""
+    from contextos.session import add_event
+    cfg = get_config()
+    success = add_event(cfg.contextos_dir / "sessions", session_id, event_type, payload)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or ended")
+    return {"ok": True}
+
+
+@app.post("/session/{session_id}/end")
+def session_end_ep(session_id: str, _token=Depends(require_token)):
+    """End a session and generate summary."""
+    from contextos.session import end_session
+    cfg = get_config()
+    try:
+        session = end_session(cfg.contextos_dir / "sessions", session_id)
+        return {"session_id": session_id, "summary": session.get("summary", {})}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/session/last")
+def session_last_ep(_token=Depends(require_token)):
+    """Return the most recent completed session summary."""
+    from contextos.session import get_last_session
+    cfg = get_config()
+    session = get_last_session(cfg.contextos_dir / "sessions")
+    return {"session": session}
+
+
+@app.get("/session/active")
+def session_active_ep(_token=Depends(require_token)):
+    """Return the currently active session, if any."""
+    from contextos.session import get_active_session
+    cfg = get_config()
+    return {"session": get_active_session(cfg.contextos_dir / "sessions")}
+
+
+# ---------------------------------------------------------------------------
+# Pull endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/pull")
+def pull_ep(
+    connector: str,
+    source: Optional[str] = None,
+    project: Optional[str] = None,
+    pull_type: Optional[str] = None,
+    force: bool = False,
+    _token=Depends(require_token),
+):
+    """Pull external data from a connector into the output directory."""
+    from contextos.connectors import CONNECTORS
+    cfg = get_config()
+    conn_cls = CONNECTORS.get(connector.lower())
+    if not conn_cls:
+        raise HTTPException(status_code=400, detail=f"Unknown connector: {connector}")
+    proj = project or cfg.project_name
+    conn_config: dict = {}
+    if source:    conn_config["source"] = source; conn_config["repo"] = source
+    if pull_type: conn_config["type"]   = pull_type
+    conn    = conn_cls(project=proj, config=conn_config)
+    out_dir = cfg.contextos_dir / "pulled" / connector / proj
+    try:
+        return conn.pull(out_dir, force=force)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
