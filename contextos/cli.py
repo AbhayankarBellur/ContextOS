@@ -292,6 +292,10 @@ def cmd_index(
     # Save content hashes for incremental future runs
     update_hash_store(cfg.metadata_dir, to_process)
 
+    # Invalidate context cache so stale results don't persist
+    from contextos.cache_layer import invalidate_cache
+    invalidate_cache()
+
     result_table = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
     result_table.add_column("k", style="dim", width=22); result_table.add_column("v", style="bold")
     result_table.add_row("Project", cfg.project_name)
@@ -507,21 +511,35 @@ def cmd_graph(fmt: str = typer.Option("text","--format")):
 # ── token commands ─────────────────────────────────────────────────────────────
 
 @token_app.command("create")
-def token_create(name: str = typer.Argument(..., help="Label for this token")):
-    """Generate a new API token. Raw value shown ONCE — save immediately."""
+def token_create(
+    name: str = typer.Argument(..., help="Label for this token"),
+    scope: str = typer.Option("write", "--scope", "-s", help="Scope: read|write|admin"),
+    expires: Optional[int] = typer.Option(None, "--expires", "-e", help="Expiry in days (default: never)"),
+):
+    """Generate a new API token with scope and optional expiry."""
     from contextos.auth import generate_token
+    from contextos.schema import TokenScope
     brand_rule("token create")
     cfg = _cfg()
-    raw, token = generate_token(name, cfg.tokens_dir)
+
+    try:
+        token_scope = TokenScope(scope.lower())
+    except ValueError:
+        error_panel("Invalid Scope", scope, "Valid scopes: read | write | admin")
+        raise typer.Exit(1)
+
+    raw, token = generate_token(name, cfg.tokens_dir, scope=token_scope, expires_days=expires)
 
     t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
     t.add_column("k", style="dim", width=10); t.add_column("v", style="bold")
-    t.add_row("ID",      token.id)
-    t.add_row("Name",    token.name)
-    t.add_row("Created", token.created_at.strftime("%Y-%m-%d %H:%M UTC"))
+    t.add_row("ID",       token.id)
+    t.add_row("Name",     token.name)
+    t.add_row("Scope",    f"[cyan]{token.scope.value}[/cyan]")
+    t.add_row("Expires",  token.expires_at.strftime("%Y-%m-%d") if token.expires_at else "never")
+    t.add_row("Created",  token.created_at.strftime("%Y-%m-%d %H:%M UTC"))
     t.add_section()
-    t.add_row("Token", f"[bold cyan]{raw}[/bold cyan]")
-    t.add_row("",      "[dim]Copy now — never shown again[/dim]")
+    t.add_row("Token",    f"[bold cyan]{raw}[/bold cyan]")
+    t.add_row("",         "[dim]Copy now — never shown again[/dim]")
 
     console.print(Panel(t, title=f"[success]{ICONS['success']} Token Created[/success]",
                         border_style="green", padding=(0,2)))
@@ -554,13 +572,19 @@ def token_list():
     t = Table(title="[bold]API Tokens[/bold]", box=box.ROUNDED, border_style="cyan")
     t.add_column("ID", style="cyan", no_wrap=True)
     t.add_column("Name", style="bold")
+    t.add_column("Scope", width=8)
     t.add_column("Created", style="dim")
     t.add_column("Last Used", style="dim")
+    t.add_column("Expires", style="dim")
     t.add_column("Status", width=10)
     for tk in tokens:
         lu = tk.last_used.strftime("%Y-%m-%d %H:%M") if tk.last_used else "—"
-        st = f"[error]REVOKED[/error]" if tk.revoked else f"[success]active[/success]"
-        t.add_row(tk.id, tk.name, tk.created_at.strftime("%Y-%m-%d %H:%M"), lu, st)
+        st = f"[error]REVOKED[/error]" if tk.revoked else (
+             f"[warning]EXPIRED[/warning]" if tk.is_expired() else
+             f"[success]active[/success]")
+        scope_str = tk.scope.value if tk.scope else "write"
+        exp_str = tk.expires_at.strftime("%Y-%m-%d") if tk.expires_at else "never"
+        t.add_row(tk.id, tk.name, scope_str, tk.created_at.strftime("%Y-%m-%d %H:%M"), lu, exp_str, st)
 
     console.print(); console.print(t)
     console.print(f"\n[dim]Raw token values are never stored or displayed.[/dim]")
@@ -1611,6 +1635,324 @@ def cmd_dashboard():
     cfg = _cfg()
     from contextos.dashboard import run_dashboard
     run_dashboard(cfg)
+
+
+# ── vault sub-commands ────────────────────────────────────────────────────────
+
+vault_app = typer.Typer(help="Vault scaffolding and validation")
+app.add_typer(vault_app, name="vault")
+
+@vault_app.command("init")
+def vault_init(
+    path: str = typer.Argument(..., help="Target directory for the new vault"),
+    template: str = typer.Option("default", "--template", "-t", help="Template: default|microservice|api-first"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    team: Optional[str] = typer.Option(None, "--team", help="Team or owner name"),
+):
+    """Scaffold a new vault from a template with pre-filled document stubs."""
+    from contextos.scaffolder import scaffold_vault, list_templates
+    brand_rule("vault init")
+    target = Path(path).resolve()
+
+    variables = {
+        "project_name": project or target.name,
+        "team":         team or "engineering",
+        "domain_name":  "core",
+    }
+
+    with console.status(f"[cyan]{ICONS['spin']} Scaffolding vault from '{template}' template…[/cyan]"):
+        try:
+            created = scaffold_vault(target, template_name=template, variables=variables)
+        except ValueError as exc:
+            avail = ", ".join(list_templates().keys())
+            error_panel("Template Not Found", str(exc), f"Available: {avail}")
+            raise typer.Exit(1)
+
+    t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    t.add_column("k", style="dim", width=16); t.add_column("v", style="bold")
+    t.add_row("Template",  template)
+    t.add_row("Location",  str(target))
+    t.add_row("Files created", str(len(created)))
+    for f in created[:8]:
+        t.add_row("", f"[dim]{f.relative_to(target)}[/dim]")
+    if len(created) > 8:
+        t.add_row("", f"[dim]…and {len(created)-8} more[/dim]")
+
+    console.print(Panel(t, title=f"[success]{ICONS['success']} Vault Scaffolded[/success]",
+                        border_style="green", padding=(0,1)))
+    next_action(f"context import {target}  &&  context index", "Import and index the new vault")
+
+
+@vault_app.command("validate")
+def vault_validate(
+    path: str = typer.Argument(".", help="Vault path to validate"),
+    fix_hints: bool = typer.Option(True, "--hints/--no-hints"),
+):
+    """Validate vault documents for frontmatter compliance."""
+    from contextos.scaffolder import validate_vault
+    brand_rule("vault validate")
+    vault_path = Path(path).resolve()
+
+    with console.status(f"[cyan]{ICONS['spin']} Validating {vault_path.name}…[/cyan]"):
+        result = validate_vault(vault_path)
+
+    t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    t.add_column("k", style="dim", width=18); t.add_column("v", style="bold")
+    t.add_row("Valid documents", f"[green]{result['valid']}[/green]")
+    t.add_row("Errors",          f"[red]{len(result['errors'])}[/red]" if result['errors'] else "[green]0[/green]")
+    t.add_row("Warnings",        f"[yellow]{len(result['warnings'])}[/yellow]" if result['warnings'] else "[green]0[/green]")
+
+    border = "green" if not result["errors"] else "red"
+    title_icon = ICONS["success"] if not result["errors"] else ICONS["error"]
+    title_color = "success" if not result["errors"] else "error"
+    console.print(Panel(t,
+        title=f"[{title_color}]{title_icon} Vault Validation — {vault_path.name}[/{title_color}]",
+        border_style=border, padding=(0,1)))
+
+    if result["errors"] and fix_hints:
+        console.print("\n[bold red]Errors (must fix):[/bold red]")
+        for e in result["errors"][:10]:
+            console.print(f"  [red]{ICONS['error']}[/red] [dim]{e['file']}[/dim] — {e['issue']}")
+
+    if result["warnings"] and fix_hints:
+        console.print("\n[bold yellow]Warnings (recommended):[/bold yellow]")
+        for w in result["warnings"][:10]:
+            console.print(f"  [yellow]{ICONS['warning']}[/yellow] [dim]{w['file']}[/dim] — {w['issue']}")
+
+    if result["errors"]:
+        raise typer.Exit(1)
+
+
+@vault_app.command("templates")
+def vault_templates():
+    """List available vault templates."""
+    from contextos.scaffolder import list_templates
+    brand_rule("vault templates")
+    templates = list_templates()
+    t = Table(title="[bold]Available Templates[/bold]", box=box.ROUNDED, border_style="cyan")
+    t.add_column("Name", style="bold cyan"); t.add_column("Description")
+    for name, desc in templates.items():
+        t.add_row(name, desc)
+    console.print(); console.print(t)
+    console.print(f"\n[dim]Usage: [bold]context vault init ./my-vault --template <name>[/bold][/dim]")
+
+
+# ── plugin commands ───────────────────────────────────────────────────────────
+
+plugin_app = typer.Typer(help="Manage ContextOS connector plugins")
+app.add_typer(plugin_app, name="plugin")
+
+@plugin_app.command("list")
+def plugin_list():
+    """List all available connectors: built-in and installed plugins."""
+    from contextos.plugins import list_plugins
+    brand_rule("plugin list")
+    plugins = list_plugins()
+    t = Table(title="[bold]Available Connectors[/bold]", box=box.ROUNDED, border_style="cyan")
+    t.add_column("Name", style="bold cyan", width=14)
+    t.add_column("Source", style="dim", width=10)
+    t.add_column("Description")
+    for p in plugins:
+        source_color = {"builtin": "dim", "global": "green", "local": "yellow", "package": "blue"}.get(p.source, "dim")
+        t.add_row(p.name, f"[{source_color}]{p.source}[/{source_color}]", p.description)
+    console.print(); console.print(t)
+    console.print(f"\n[dim]Usage: [bold]context pull <name> --source ...[/bold][/dim]")
+
+
+@plugin_app.command("install")
+def plugin_install(
+    package: str = typer.Argument(..., help="Package name or path to install"),
+    upgrade: bool = typer.Option(False, "--upgrade", "-U"),
+):
+    """Install a connector plugin from PyPI or a local path."""
+    from contextos.plugins import install_plugin
+    brand_rule("plugin install")
+    with console.status(f"[cyan]{ICONS['spin']} Installing {package}…[/cyan]"):
+        success = install_plugin(package, upgrade=upgrade)
+    if success:
+        ok(f"Plugin installed: [bold]{package}[/bold]")
+        info("Run [cyan]context plugin list[/cyan] to verify.")
+    else:
+        error_panel("Install Failed", f"Could not install: {package}",
+                    "Check package name and internet connection")
+        raise typer.Exit(1)
+
+
+# ── logs command ──────────────────────────────────────────────────────────────
+
+@app.command("logs")
+def cmd_logs(
+    tail: int = typer.Option(50, "--tail", "-n", help="Number of lines to show"),
+    log_type: str = typer.Option("app", "--type", "-t", help="Log type: app|slow|audit"),
+    fmt: str = typer.Option("text", "--format", help="Output format: text|json"),
+):
+    """Show structured logs: app, slow queries, or audit trail."""
+    from contextos.logger import get_logger
+    brand_rule("logs")
+    cfg = _cfg()
+    logger_inst = get_logger(cfg.logs_dir)
+    records = logger_inst.tail_log(lines=tail, log_type=log_type)
+
+    if not records:
+        empty_state(f"No {log_type} logs yet.", "context serve  # then make some requests")
+        return
+
+    if fmt == "json":
+        console.print_json(json.dumps(records, indent=2))
+        return
+
+    t = Table(
+        title=f"[bold]{log_type.title()} Log[/bold]  [dim]{len(records)} entries[/dim]",
+        box=box.SIMPLE_HEAD, border_style="cyan"
+    )
+    t.add_column("Time", style="dim", width=20, no_wrap=True)
+    t.add_column("Type", width=12)
+    t.add_column("Details", min_width=40)
+
+    for r in records[-tail:]:
+        ts       = r.get("ts","")[:19].replace("T"," ")
+        rtype    = r.get("type","")
+        color    = {"request":"cyan","error":"red","slow_query":"yellow","audit":"magenta","index_op":"green"}.get(rtype,"dim")
+
+        if rtype == "request":
+            details = f"{r.get('method','')} {r.get('endpoint','')} [{r.get('status','')}] {r.get('latency_ms','')}ms"
+        elif rtype == "index_op":
+            details = f"{r.get('operation','')} docs={r.get('doc_count','')} chunks={r.get('chunk_count','')} {r.get('duration_s','')}s"
+        elif rtype == "audit":
+            details = f"token={r.get('token_name','')} {r.get('method','')} {r.get('endpoint','')} {r.get('latency_ms','')}ms"
+        else:
+            details = r.get("message","") or str(r)[:80]
+
+        t.add_row(ts, f"[{color}]{rtype}[/{color}]", details)
+
+    console.print(); console.print(t)
+
+
+# ── ci sub-commands ───────────────────────────────────────────────────────────
+
+ci_app = typer.Typer(help="CI/CD integration commands")
+app.add_typer(ci_app, name="ci")
+
+@ci_app.command("check")
+def ci_check(
+    path: str = typer.Option(".", "--vault", help="Vault path to check"),
+):
+    """CI validation: exit 1 if vault has errors, orphans, or stale index. Zero output on success."""
+    from contextos.scaffolder import validate_vault
+    from contextos.vault import load_registry, load_hash_store
+    import sys
+
+    vault_path = Path(path).resolve()
+    issues = []
+
+    # 1. Validate frontmatter
+    result = validate_vault(vault_path)
+    if result["errors"]:
+        for e in result["errors"]:
+            issues.append(f"FRONTMATTER_ERROR: {e['file']}: {e['issue']}")
+
+    # 2. Check stale index
+    ctx_dir = _root() / ".contextos"
+    if ctx_dir.exists():
+        from contextos.config import load_config
+        cfg = load_config()
+        registry = load_registry(cfg.metadata_dir)
+        hashes   = load_hash_store(cfg.metadata_dir)
+        stale = 0
+        for rec in registry:
+            fp = Path(rec["filepath"])
+            if fp.exists():
+                import hashlib
+                h = hashlib.sha256(fp.read_bytes()).hexdigest()
+                if rec["id"] not in hashes or hashes[rec["id"]] != h:
+                    stale += 1
+        if stale > 0:
+            issues.append(f"STALE_INDEX: {stale} document(s) not indexed — run context index")
+
+    if issues:
+        for issue in issues:
+            console.print(f"[red]{ICONS['error']}[/red] {issue}")
+        raise typer.Exit(1)
+    else:
+        console.print(f"[green]{ICONS['success']}[/green] All checks passed")
+
+
+@ci_app.command("index")
+def ci_index():
+    """Headless index for CI: JSON progress to stdout, exit 0/1."""
+    import sys
+    cfg = _cfg()
+    from contextos.vault import load_registry, compute_changed_documents, update_hash_store
+    from contextos.chunker import chunk_all_documents
+    from contextos.embedder import Embedder
+    from contextos.store import VectorStore
+    from contextos.graph import GraphBuilder
+    from contextos.schema import Document, DocumentType, DocumentStatus
+    from datetime import date
+
+    registry = load_registry(cfg.metadata_dir)
+    if not registry:
+        console.print_json(json.dumps({"status": "error", "message": "No vault registered"}))
+        raise typer.Exit(1)
+
+    all_docs: list[Document] = []
+    for rec in registry:
+        fp = Path(rec["filepath"])
+        if not fp.exists(): continue
+        all_docs.append(Document(
+            id=rec["id"], project=rec["project"], type=DocumentType(rec["type"]),
+            domain=rec.get("domain"), status=DocumentStatus(rec.get("status","draft")),
+            owner=rec.get("owner"),
+            updated_at=date.fromisoformat(rec["updated_at"]) if rec.get("updated_at") else None,
+            tags=rec.get("tags",[]), title=rec["title"], filepath=fp,
+            content=fp.read_text(encoding="utf-8")))
+
+    new_docs, changed_docs, unchanged = compute_changed_documents(all_docs, cfg.metadata_dir)
+    to_process = new_docs + changed_docs
+
+    if not to_process:
+        console.print_json(json.dumps({"status": "ok", "message": "Index up-to-date",
+                                        "unchanged": len(unchanged)}))
+        return
+
+    import time as _time; t0 = _time.time()
+    doc_map = {d.id: d for d in all_docs}
+    chunks_by_doc = chunk_all_documents(to_process, cfg.cache_dir)
+    embedder = Embedder(cfg.embeddings_dir)
+    all_chunks = [c for cl in chunks_by_doc.values() for c in cl]
+    vecs = embedder.embed([c.content for c in all_chunks])
+    for c, v in zip(all_chunks, vecs): c.embedding = v
+    store = VectorStore(cfg.lancedb_dir)
+    written = store.upsert_chunks(all_chunks, doc_map)
+    gb = GraphBuilder(); gb.build(all_docs); gb.save(cfg.graph_dir)
+    update_hash_store(cfg.metadata_dir, to_process)
+    elapsed = _time.time() - t0
+
+    from contextos.cache_layer import invalidate_cache
+    invalidate_cache()
+
+    console.print_json(json.dumps({
+        "status": "ok", "new": len(new_docs), "changed": len(changed_docs),
+        "unchanged": len(unchanged), "chunks": written, "elapsed_s": round(elapsed, 2)
+    }))
+
+
+# ── context cache stats ───────────────────────────────────────────────────────
+
+@cache_app.command("stats")
+def cache_stats():
+    """Show context response cache hit/miss statistics."""
+    from contextos.cache_layer import get_cache
+    brand_rule("cache stats")
+    stats = get_cache().stats()
+    t = Table(title="[bold]Context Cache[/bold]", show_header=False, box=box.ROUNDED, border_style="cyan")
+    t.add_column("k", style="dim", width=18); t.add_column("v", style="bold")
+    t.add_row("Hits",         f"[green]{stats['hits']}[/green]")
+    t.add_row("Misses",       f"[yellow]{stats['misses']}[/yellow]")
+    t.add_row("Hit rate",     f"[cyan]{stats['hit_rate_pct']}%[/cyan]")
+    t.add_row("Entries",      f"{stats['size']} / {stats['max_size']}")
+    t.add_row("TTL",          f"{stats['ttl_seconds']}s")
+    console.print(); console.print(t)
 
 
 # ── cache commands ────────────────────────────────────────────────────────────

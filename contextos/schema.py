@@ -42,6 +42,23 @@ class EdgeType(str, Enum):
     supersedes = "supersedes"
 
 
+class TokenScope(str, Enum):
+    """Token permission scopes.
+    read  — search, context, documents, graph (agents, CI read)
+    write — index, pull, import, session write (trusted agents)
+    admin — token management, audit, memory reset (operators only)
+    """
+    read  = "read"
+    write = "write"
+    admin = "admin"
+
+    @classmethod
+    def allows(cls, token_scope: "TokenScope", required: "TokenScope") -> bool:
+        """Check if token_scope satisfies required scope (admin > write > read)."""
+        order = {cls.read: 0, cls.write: 1, cls.admin: 2}
+        return order.get(token_scope, -1) >= order.get(required, 0)
+
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------
@@ -83,12 +100,37 @@ class GraphEdge(BaseModel):
 
 
 class Token(BaseModel):
-    id: str                          # ctx_<random 32 hex chars>
-    name: str                        # human label
-    hash: str                        # SHA-256 of raw token
+    id: str
+    name: str
+    hash: str
     created_at: datetime
     last_used: Optional[datetime] = None
     revoked: bool = False
+    scope: Optional[TokenScope] = TokenScope.write
+    expires_at: Optional[datetime] = None
+    request_count: int = 0
+
+    def is_expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        from datetime import timezone
+        return datetime.now(timezone.utc) > self.expires_at
+
+    def has_scope(self, required: TokenScope) -> bool:
+        if self.scope is None:
+            return True  # legacy tokens without scope: full access
+        return TokenScope.allows(self.scope, required)
+
+
+class AuditEntry(BaseModel):
+    request_id: str
+    token_id: str
+    token_name: str
+    endpoint: str
+    method: str
+    latency_ms: int
+    scope: str
+    timestamp: datetime
 
 
 # ---------------------------------------------------------------------------

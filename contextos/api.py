@@ -13,13 +13,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 
 from contextos.schema import (
     SearchRequest, SearchResponse, ContextRequest, ContextResponse,
-    HealthResponse, DocumentType,
+    HealthResponse, DocumentType, TokenScope,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ def get_graph():
 app = FastAPI(
     title="ContextOS",
     description="Local-first knowledge OS for AI coding agents",
-    version="1.0.0-rc1",
+    version="1.3.0-rc1",
     docs_url="/docs",
     redoc_url=None,
 )
@@ -93,19 +94,76 @@ app.add_middleware(
 security = HTTPBearer(auto_error=False)
 
 
+# ---------------------------------------------------------------------------
+# Request ID + logging middleware
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def request_middleware(request: Request, call_next):
+    from contextos.logger import get_logger, new_request_id
+    request_id = new_request_id()
+    request.state.request_id = request_id
+    request.state.start_time = time.time()
+
+    response = await call_next(request)
+
+    latency_ms = int((time.time() - request.state.start_time) * 1000)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Latency-MS"] = str(latency_ms)
+
+    try:
+        cfg    = get_config()
+        logger = get_logger(cfg.logs_dir)
+        logger.log_request(
+            request_id  = request_id,
+            endpoint    = request.url.path,
+            method      = request.method,
+            latency_ms  = latency_ms,
+            token_id    = None,
+            status_code = response.status_code,
+        )
+    except Exception:
+        pass
+
+    return response
+
+
 def require_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
-    """Validate Bearer token. Raises 401 if missing or invalid."""
+    """Validate Bearer token. Raises 401 if missing/invalid, 403 if expired, 429 if rate limited."""
     if credentials is None:
         raise HTTPException(status_code=401, detail="Authorization header required")
 
-    from contextos.auth import validate_token
+    from contextos.auth import validate_token, check_rate_limit
     cfg = get_config()
     token = validate_token(credentials.credentials, cfg.tokens_dir)
 
     if token is None:
         raise HTTPException(status_code=401, detail="Invalid or revoked token")
 
+    if token.is_expired():
+        raise HTTPException(status_code=403, detail="Token has expired")
+
+    if not check_rate_limit(token, cfg.tokens_dir):
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded — 1000 req/min",
+            headers={"Retry-After": "60"},
+        )
+
     return token
+
+
+def require_scope(required: TokenScope):
+    """Dependency factory: enforce a minimum token scope."""
+    def _check(token=Depends(require_scope(TokenScope.read))):
+        if not token.has_scope(required):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient scope. Required: {required.value}, "
+                       f"token has: {token.scope.value if token.scope else 'none'}"
+            )
+        return token
+    return _check
 
 
 # ---------------------------------------------------------------------------
@@ -113,22 +171,59 @@ def require_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(
 # ---------------------------------------------------------------------------
 
 @app.get("/health", response_model=HealthResponse)
-def health():
-    """Health check — no auth required. Used by agents to verify server is running."""
-    store = get_store()
+def health(deep: bool = Query(False, description="Run a live search to verify end-to-end")):
+    """Health check. ?deep=true runs a sample search to verify retrieval works."""
+    store     = get_store()
     doc_count = store.count_documents()
-    return HealthResponse(
-        status="ok",
-        indexed=doc_count,
-        version="1.0.0-rc1",
-    )
+
+    if deep:
+        # End-to-end verification
+        try:
+            embedder = get_embedder()
+            qv = embedder.embed_query("health check")
+            results = store.search(qv, limit=1)
+            retrieval_ok = True
+        except Exception as exc:
+            logger.warning("Deep health check failed: %s", exc)
+            retrieval_ok = False
+
+        return {
+            "status":       "ok" if retrieval_ok else "degraded",
+            "indexed":      doc_count,
+            "version":      "1.3.0-rc1",
+            "retrieval_ok": retrieval_ok,
+        }
+
+    return HealthResponse(status="ok", indexed=doc_count, version="1.3.0-rc1")
+
+
+@app.get("/metrics")
+def metrics(_token=Depends(require_scope(TokenScope.read))):
+    """Return request metrics: total_requests, avg_latency_ms, cache stats."""
+    from contextos.logger import get_logger
+    from contextos.cache_layer import get_cache
+    cfg = get_config()
+    log_metrics   = get_logger(cfg.logs_dir).get_metrics()
+    cache_stats   = get_cache().stats()
+    return {**log_metrics, "cache": cache_stats}
+
+
+@app.get("/audit")
+def audit(
+    limit: int = Query(50, le=500),
+    _token=Depends(require_scope(TokenScope.admin)),
+):
+    """Return recent audit log entries. Requires admin scope."""
+    from contextos.logger import get_logger
+    cfg = get_config()
+    return {"entries": get_logger(cfg.logs_dir).read_audit(limit=limit)}
 
 
 @app.post("/search", response_model=SearchResponse)
 def search(
     request: SearchRequest,
     session_id: Optional[str] = None,
-    _token=Depends(require_token),
+    _token=Depends(require_scope(TokenScope.read)),
 ):
     """Primary retrieval endpoint. Agents call this to find relevant document chunks."""
     from contextos.retrieval import search as do_search
@@ -166,10 +261,27 @@ def search(
 def context(
     request: ContextRequest,
     session_id: Optional[str] = None,
-    _token=Depends(require_token),
+    _token=Depends(require_scope(TokenScope.read)),
 ):
-    """Assemble a ready-to-paste context block for an agent task."""
+    """Assemble a ready-to-paste context block. Cached for 5 minutes per query."""
     from contextos.retrieval import assemble_context
+    from contextos.cache_layer import get_cache
+
+    cache = get_cache()
+    cache_key = cache.make_key(request.query, request.project, request.max_tokens)
+
+    # Try cache first
+    cached = cache.get(cache_key)
+    if cached is not None:
+        if session_id:
+            try:
+                from contextos.session import log_context
+                cfg = get_config()
+                log_context(cfg.contextos_dir / "sessions", session_id,
+                            request.query, cached.token_estimate)
+            except Exception:
+                pass
+        return cached
 
     embedder = get_embedder()
     store    = get_store()
@@ -185,7 +297,9 @@ def context(
         priority_order=request.priority_order,
     )
 
-    # Log to session if provided
+    # Store in cache
+    cache.set(cache_key, result)
+
     if session_id:
         try:
             from contextos.session import log_context
@@ -199,7 +313,7 @@ def context(
 
 
 @app.get("/graph")
-def graph_endpoint(_token=Depends(require_token)):
+def graph_endpoint(_token=Depends(require_scope(TokenScope.read))):
     """Return the full knowledge graph as nodes and edges."""
     graph_builder = get_graph()
     cfg = get_config()
@@ -222,7 +336,7 @@ def list_documents(
     type: Optional[str] = Query(None),
     domain: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
-    _token=Depends(require_token),
+    _token=Depends(require_scope(TokenScope.read)),
 ):
     """List all indexed documents with optional filters."""
     store = get_store()
@@ -240,7 +354,7 @@ def list_documents(
 # ---------------------------------------------------------------------------
 
 @app.get("/watcher")
-def watcher_status_endpoint(_token=Depends(require_token)):
+def watcher_status_endpoint(_token=Depends(require_scope(TokenScope.read))):
     """Return live watch mode status."""
     try:
         from contextos.watcher import watcher_status
@@ -256,7 +370,7 @@ def watcher_status_endpoint(_token=Depends(require_token)):
 @app.post("/session/start")
 def session_start_ep(
     name: Optional[str] = None,
-    _token=Depends(require_token),
+    _token=Depends(require_scope(TokenScope.read)),
 ):
     """Start a new agent session."""
     from contextos.session import create_session
@@ -270,7 +384,7 @@ def session_event_ep(
     session_id: str,
     event_type: str,
     payload: dict,
-    _token=Depends(require_token),
+    _token=Depends(require_scope(TokenScope.read)),
 ):
     """Log an event to an active session."""
     from contextos.session import add_event
@@ -282,7 +396,7 @@ def session_event_ep(
 
 
 @app.post("/session/{session_id}/end")
-def session_end_ep(session_id: str, _token=Depends(require_token)):
+def session_end_ep(session_id: str, _token=Depends(require_scope(TokenScope.read))):
     """End a session and generate summary."""
     from contextos.session import end_session
     cfg = get_config()
@@ -294,7 +408,7 @@ def session_end_ep(session_id: str, _token=Depends(require_token)):
 
 
 @app.get("/session/last")
-def session_last_ep(_token=Depends(require_token)):
+def session_last_ep(_token=Depends(require_scope(TokenScope.read))):
     """Return the most recent completed session summary."""
     from contextos.session import get_last_session
     cfg = get_config()
@@ -303,7 +417,7 @@ def session_last_ep(_token=Depends(require_token)):
 
 
 @app.get("/session/active")
-def session_active_ep(_token=Depends(require_token)):
+def session_active_ep(_token=Depends(require_scope(TokenScope.read))):
     """Return the currently active session, if any."""
     from contextos.session import get_active_session
     cfg = get_config()
@@ -321,7 +435,7 @@ def pull_ep(
     project: Optional[str] = None,
     pull_type: Optional[str] = None,
     force: bool = False,
-    _token=Depends(require_token),
+    _token=Depends(require_scope(TokenScope.read)),
 ):
     """Pull external data from a connector into the output directory."""
     from contextos.connectors import CONNECTORS
