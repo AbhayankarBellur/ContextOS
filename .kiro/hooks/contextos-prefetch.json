@@ -1,0 +1,12 @@
+{
+  "name": "ContextOS Prefetch",
+  "version": "1.0.0",
+  "description": "Fetches structured project context from ContextOS before every Kiro task. Injects architecture decisions, domain models, and current sprint context automatically.",
+  "when": {
+    "type": "preTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Before starting this task, retrieve relevant project context from ContextOS. Call: curl -s -X POST http://127.0.0.1:8080/context -H \"Authorization: Bearer $CONTEXTOS_TOKEN\" -H \"Content-Type: application/json\" -d \"{\\\"query\\\": \\\"{{task}}\\\", \\\"project\\\": \\\"{{project}}\\\", \\\"max_tokens\\\": 4000}\". Use the returned context block to inform your implementation. If the server is not running, proceed without it."
+  }
+}
