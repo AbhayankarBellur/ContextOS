@@ -1,0 +1,9 @@
+# ContextOS Integration
+Before every task, retrieve context from ContextOS:
+
+curl -s -X POST http://127.0.0.1:8080/context \
+  -H "Authorization: Bearer $CONTEXTOS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "<your task>", "project": "<project-name>"}'
+
+After completing a task: run `context index` to update the knowledge graph.

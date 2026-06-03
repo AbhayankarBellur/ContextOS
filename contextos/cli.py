@@ -160,9 +160,12 @@ def cmd_import(path: str = typer.Argument(..., help="Path to Markdown vault dire
 # ── index ─────────────────────────────────────────────────────────────────────
 
 @app.command("index")
-def cmd_index():
-    """Build vector index, embeddings, and knowledge graph."""
-    from contextos.vault import load_registry, get_content_hash
+def cmd_index(
+    force: bool = typer.Option(False, "--force", "-f", help="Force re-index all documents, ignoring cache"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Index only a specific project"),
+):
+    """Build vector index, embeddings, and knowledge graph. Skips unchanged files."""
+    from contextos.vault import load_registry, compute_changed_documents, update_hash_store
     from contextos.chunker import chunk_all_documents
     from contextos.embedder import Embedder
     from contextos.store import VectorStore
@@ -175,12 +178,14 @@ def cmd_index():
     if not registry:
         empty_state("No documents registered.", "context import <path>"); raise typer.Exit(0)
 
-    # Load documents
-    documents: list[Document] = []
+    # Load all documents from disk
+    all_documents: list[Document] = []
     for rec in registry:
+        if project and rec.get("project") != project:
+            continue
         fp = Path(rec["filepath"])
         if not fp.exists(): warn(f"Missing: {fp.name}"); continue
-        documents.append(Document(
+        all_documents.append(Document(
             id=rec["id"], project=rec["project"], type=DocumentType(rec["type"]),
             domain=rec.get("domain"), status=DocumentStatus(rec.get("status","draft")),
             owner=rec.get("owner"),
@@ -188,25 +193,51 @@ def cmd_index():
             tags=rec.get("tags",[]), title=rec["title"], filepath=fp,
             content=fp.read_text(encoding="utf-8")))
 
-    doc_map = {d.id: d for d in documents}
-    stats = {"docs": len(documents), "chunks": 0, "nodes": 0, "edges": 0}
+    # Incremental change detection
+    if force:
+        to_process = all_documents
+        new_count = len(all_documents)
+        changed_count = 0
+        unchanged_count = 0
+    else:
+        new_docs, changed_docs, unchanged_docs = compute_changed_documents(all_documents, cfg.metadata_dir)
+        to_process = new_docs + changed_docs
+        new_count = len(new_docs)
+        changed_count = len(changed_docs)
+        unchanged_count = len(unchanged_docs)
+
+    if not to_process and not force:
+        result_table = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+        result_table.add_column("k", style="dim", width=22); result_table.add_column("v", style="bold")
+        result_table.add_row("Unchanged", f"[green]{unchanged_count}[/green] documents (skipped)")
+        result_table.add_row("New / Changed", "0")
+        result_table.add_row("Hint", "[dim]Use --force to re-index all[/dim]")
+        console.print(Panel(result_table,
+            title=f"[success]{ICONS['success']} Index Up-to-Date[/success]",
+            border_style="green", padding=(0,1)))
+        return
+
+    doc_map = {d.id: d for d in all_documents}
+    stats = {"docs": len(to_process), "chunks": 0, "nodes": 0, "edges": 0, "symbols": 0,
+             "new": new_count, "changed": changed_count, "unchanged": unchanged_count}
     t_total = time.time()
 
     # Live updating panel
     def make_live_table(step: str, elapsed: float) -> Panel:
         t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
-        t.add_column("k", style="dim", width=20); t.add_column("v", style="bold cyan")
+        t.add_column("k", style="dim", width=22); t.add_column("v", style="bold cyan")
         t.add_row("Step", step)
-        t.add_row("Documents", str(stats["docs"]))
+        t.add_row("Processing", f"{stats['docs']} docs  [dim]({stats['new']} new · {stats['changed']} changed · {stats['unchanged']} unchanged)[/dim]")
         t.add_row("Chunks", str(stats["chunks"]) if stats["chunks"] else "—")
         t.add_row("Graph Nodes", str(stats["nodes"]) if stats["nodes"] else "—")
         t.add_row("Graph Edges", str(stats["edges"]) if stats["edges"] else "—")
+        if stats["symbols"]: t.add_row("Symbols", str(stats["symbols"]))
         t.add_row("Elapsed", f"{elapsed:.1f}s")
         return Panel(t, title=f"[cyan]{ICONS['spin']} Indexing Project[/cyan]", border_style="cyan", padding=(0,1))
 
     with Live(make_live_table("Chunking…", 0), console=console, refresh_per_second=4) as live:
         # Step 1: Chunk
-        chunks_by_doc = chunk_all_documents(documents, cfg.cache_dir)
+        chunks_by_doc = chunk_all_documents(to_process, cfg.cache_dir)
         stats["chunks"] = sum(len(v) for v in chunks_by_doc.values())
         live.update(make_live_table("Generating embeddings…", time.time()-t_total))
 
@@ -234,25 +265,43 @@ def cmd_index():
         written = store.upsert_chunks(all_chunks, doc_map)
         stats["chunks"] = written
 
-        # Step 4: Graph
+        # Step 4: Graph (always rebuild from all_documents for correct edges)
         live.update(make_live_table("Building knowledge graph…", time.time()-t_total))
-        gb = GraphBuilder(); gb.build(documents); gb.save(cfg.graph_dir)
+        gb = GraphBuilder(); gb.build(all_documents); gb.save(cfg.graph_dir)
         s = gb.get_summary(); stats["nodes"] = s["nodes"]; stats["edges"] = s["edges"]
+
+        # Step 5: Symbol index (Python + JS/TS)
+        live.update(make_live_table("Building symbol index…", time.time()-t_total))
+        try:
+            from contextos.symbols import build_symbol_index
+            symbols_dir = cfg.contextos_dir / "symbols"
+            sym_result = build_symbol_index(cfg.vault_paths, symbols_dir)
+            stats["symbols"] = sym_result.get("symbols", 0)
+        except Exception as exc:
+            warn(f"Symbol index skipped: {exc}")
+            stats["symbols"] = 0
+
         live.update(make_live_table("Complete", time.time()-t_total))
 
     elapsed = time.time()-t_total
     cfg.metadata_dir.mkdir(exist_ok=True)
     meta = cfg.metadata_dir/"index_meta.json"
     meta.write_text(json.dumps({"last_indexed":time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "document_count":len(documents),"chunk_count":written,"embedding_model":cfg.embedding_model},indent=2))
+        "document_count": len(all_documents),"chunk_count":written,"embedding_model":cfg.embedding_model},indent=2))
+
+    # Save content hashes for incremental future runs
+    update_hash_store(cfg.metadata_dir, to_process)
 
     result_table = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
-    result_table.add_column("k", style="dim", width=20); result_table.add_column("v", style="bold")
+    result_table.add_column("k", style="dim", width=22); result_table.add_column("v", style="bold")
     result_table.add_row("Project", cfg.project_name)
-    result_table.add_row("Documents Indexed", f"[cyan]{len(documents)}[/cyan]")
-    result_table.add_row("Chunks Generated", f"[cyan]{written:,}[/cyan]")
-    result_table.add_row("Graph Nodes", f"[cyan]{stats['nodes']}[/cyan]")
-    result_table.add_row("Graph Edges", f"[cyan]{stats['edges']}[/cyan]")
+    result_table.add_row("New documents", f"[cyan]{new_count}[/cyan]")
+    result_table.add_row("Changed documents", f"[cyan]{changed_count}[/cyan]")
+    result_table.add_row("Unchanged (skipped)", f"[dim]{unchanged_count}[/dim]")
+    result_table.add_row("Chunks generated", f"[cyan]{written:,}[/cyan]")
+    result_table.add_row("Graph nodes", f"[cyan]{stats['nodes']}[/cyan]")
+    result_table.add_row("Graph edges", f"[cyan]{stats['edges']}[/cyan]")
+    if stats.get("symbols"): result_table.add_row("Symbols indexed", f"[cyan]{stats['symbols']:,}[/cyan]")
     result_table.add_row("Time", f"[green]{elapsed:.1f}s[/green]")
     result_table.add_row("Model", f"[dim]{cfg.embedding_model}[/dim]")
 
@@ -318,7 +367,10 @@ def cmd_search(
 # ── serve ─────────────────────────────────────────────────────────────────────
 
 @app.command("serve")
-def cmd_serve(port: int = typer.Option(8080, "--port")):
+def cmd_serve(
+    port: int = typer.Option(8080, "--port"),
+    watch: bool = typer.Option(False, "--watch", "-w", help="Auto re-index vault files on change"),
+):
     """Start the ContextOS API server on 127.0.0.1."""
     brand_rule("serve")
     cfg = _cfg()
@@ -337,17 +389,26 @@ def cmd_serve(port: int = typer.Option(8080, "--port")):
     chk(f"Embeddings cached  ({cfg.embeddings_dir.name})", cfg.embeddings_dir.exists())
     chk("Graph engine ready", (cfg.graph_dir/"graph.json").exists())
     chk(f"LanceDB connected  (.contextos/lancedb)", cfg.lancedb_dir.exists())
+    if watch:
+        chk(f"Watch mode active  ({len(cfg.vault_paths)} vault paths)", bool(cfg.vault_paths))
 
     checks.add_section()
     checks.add_row(f"[success]{ICONS['server']}[/success]",
         f"[bold]Server Running  [cyan]http://127.0.0.1:{port}[/cyan][/bold]")
     checks.add_row("", f"[dim]Docs: http://127.0.0.1:{port}/docs[/dim]")
     checks.add_row("", f"[dim]Health: http://127.0.0.1:{port}/health[/dim]")
+    if watch:
+        checks.add_row("", "[dim]Watch: vault files auto-indexed on save[/dim]")
     checks.add_section()
     checks.add_row("[dim]⌨[/dim]", "[dim]Press Ctrl+C to stop[/dim]")
 
     console.print(Panel(checks, title="[bold]ContextOS Local Server[/bold]",
                         border_style="green", padding=(0,2)))
+
+    # Start file watcher if requested
+    if watch and cfg.vault_paths:
+        from contextos.watcher import start_watcher
+        start_watcher(cfg)
 
     from contextos.api import run_server
     run_server(port=port)
@@ -913,18 +974,387 @@ def cmd_doctor():
         console.print(f"\n[warning]{ICONS['warning']}  Some checks failed. Follow the hints above.[/warning]")
 
 
+# ── context context (agent-facing) ───────────────────────────────────────────
+
+@app.command("context")
+def cmd_context(
+    query: str = typer.Argument(..., help="Task or question to fetch context for"),
+    project: Optional[str] = typer.Option(None, "-p", "--project"),
+    max_tokens: int = typer.Option(4000, "--max-tokens", "-m"),
+    raw: bool = typer.Option(False, "--raw", help="Print raw Markdown, no panel (pipe-friendly)"),
+):
+    """Assemble a context block for an agent task. The main pre-task command."""
+    from contextos.embedder import Embedder
+    from contextos.store import VectorStore
+    from contextos.graph import GraphBuilder
+    from contextos.retrieval import assemble_context
+    brand_rule("context")
+    cfg = _cfg()
+
+    with console.status(f"[cyan]{ICONS['spin']} Assembling context…[/cyan]"):
+        embedder = Embedder(cfg.embeddings_dir)
+        store    = VectorStore(cfg.lancedb_dir)
+        gb       = GraphBuilder(); gb.load(cfg.graph_dir)
+        result   = assemble_context(
+            query=query, embedder=embedder, store=store,
+            graph_builder=gb, project=project, max_tokens=max_tokens,
+        )
+
+    if raw:
+        # Plain output for piping to agents
+        console.print(result.context)
+        return
+
+    # Rich panel display — use plain text, not Markdown renderer (avoids hangs on large content)
+    preview = result.context[:2000]
+    if len(result.context) > 2000:
+        preview += f"\n\n[dim]… {len(result.context) - 2000} more chars — use --raw for full output[/dim]"
+
+    sources_text = "\n".join(
+        f"  [dim]•[/dim] [{type_style(s.get('type',''))}]{s.get('type','')}[/{type_style(s.get('type',''))}]  {s.get('title','')}"
+        for s in result.sources[:8]
+    )
+    if len(result.sources) > 8:
+        sources_text += f"\n  [dim]…and {len(result.sources)-8} more[/dim]"
+
+    console.print(Panel(
+        preview,
+        title=f"[bold]Retrieved Context[/bold]  [dim]~{result.token_estimate} tokens · {len(result.sources)} sources[/dim]",
+        border_style="cyan", padding=(0, 2)
+    ))
+    if sources_text:
+        console.print(Panel(sources_text, title="[dim]Sources[/dim]", border_style="dim", padding=(0,2)))
+
+
+# ── context diff ─────────────────────────────────────────────────────────────
+
+@app.command("diff")
+def cmd_diff():
+    """Show what changed in the vault since the last index run."""
+    from contextos.vault import load_registry, load_hash_store
+    brand_rule("diff")
+    cfg = _cfg()
+    registry = load_registry(cfg.metadata_dir)
+    if not registry:
+        empty_state("No vault registered.", "context import <path>"); raise typer.Exit(0)
+
+    stored_hashes = load_hash_store(cfg.metadata_dir)
+
+    new_files, changed_files, missing_files = [], [], []
+    for rec in registry:
+        fp = Path(rec["filepath"])
+        if not fp.exists():
+            missing_files.append(rec); continue
+        current_hash = __import__("hashlib").sha256(fp.read_bytes()).hexdigest()
+        doc_id = rec["id"]
+        if doc_id not in stored_hashes:
+            new_files.append(rec)
+        elif stored_hashes[doc_id] != current_hash:
+            changed_files.append(rec)
+
+    if not new_files and not changed_files and not missing_files:
+        ok("Vault is up-to-date with the index. Nothing to re-index.")
+        return
+
+    t = Table(title="[bold]Vault Diff[/bold]  [dim]since last index[/dim]",
+              box=box.ROUNDED, border_style="cyan")
+    t.add_column("Status", width=12)
+    t.add_column("File", style="bold")
+    t.add_column("Project", style="dim")
+
+    for r in new_files:
+        t.add_row(f"[green]new[/green]", Path(r["filepath"]).name, r.get("project",""))
+    for r in changed_files:
+        t.add_row(f"[yellow]changed[/yellow]", Path(r["filepath"]).name, r.get("project",""))
+    for r in missing_files:
+        t.add_row(f"[red]missing[/red]", Path(r["filepath"]).name, r.get("project",""))
+
+    console.print(); console.print(t)
+    total = len(new_files) + len(changed_files)
+    if total:
+        next_action("context index", f"{total} file(s) need re-indexing")
+
+
+# ── context projects ──────────────────────────────────────────────────────────
+
+@app.command("projects")
+def cmd_projects():
+    """List all registered projects with document counts and index status."""
+    from contextos.vault import load_registry, load_hash_store
+    brand_rule("projects")
+    cfg = _cfg()
+    registry = load_registry(cfg.metadata_dir)
+    if not registry:
+        empty_state("No vaults registered.", "context import <path>"); raise typer.Exit(0)
+
+    stored_hashes = load_hash_store(cfg.metadata_dir)
+    projects: dict[str, dict] = {}
+    for rec in registry:
+        p = rec.get("project", "unknown")
+        if p not in projects:
+            projects[p] = {"docs": 0, "indexed": 0, "stale": 0}
+        projects[p]["docs"] += 1
+        fp = Path(rec["filepath"])
+        if fp.exists():
+            current = __import__("hashlib").sha256(fp.read_bytes()).hexdigest()
+            if rec["id"] in stored_hashes and stored_hashes[rec["id"]] == current:
+                projects[p]["indexed"] += 1
+            else:
+                projects[p]["stale"] += 1
+
+    t = Table(title="[bold]Registered Projects[/bold]", box=box.ROUNDED, border_style="cyan")
+    t.add_column("Project", style="bold cyan")
+    t.add_column("Documents", justify="right")
+    t.add_column("Indexed", justify="right", style="green")
+    t.add_column("Stale", justify="right", style="yellow")
+    t.add_column("Status", width=14)
+
+    for name, stats in sorted(projects.items()):
+        if stats["stale"] == 0 and stats["indexed"] > 0:
+            status = f"[success]{ICONS['success']} current[/success]"
+        elif stats["stale"] > 0:
+            status = f"[warning]{ICONS['warning']} needs index[/warning]"
+        else:
+            status = f"[error]{ICONS['error']} not indexed[/error]"
+        t.add_row(name, str(stats["docs"]), str(stats["indexed"]), str(stats["stale"]), status)
+
+    console.print(); console.print(t)
+
+
+# ── context about ─────────────────────────────────────────────────────────────
+
+@app.command("about")
+def cmd_about():
+    """Show version, architecture, and license information."""
+    print_logo()
+    t = Table(show_header=False, box=box.ROUNDED, border_style="cyan", min_width=52, padding=(0,1))
+    t.add_column("k", style="dim", width=20); t.add_column("v", style="bold")
+    t.add_row("Version", f"v{VERSION}")
+    t.add_row("License", "MIT")
+    t.add_row("Architecture", "3-layer: Vault → Index → API")
+    t.add_row("Embedding model", "BAAI/bge-small-en-v1.5 (384-dim)")
+    t.add_row("Vector store", "LanceDB (local, embedded)")
+    t.add_row("Graph engine", "NetworkX (JSON persistence)")
+    t.add_row("API binding", "127.0.0.1 only — never 0.0.0.0")
+    t.add_row("Network at runtime", "Zero — fully offline after model download")
+    t.add_row("Repository", "github.com/AbhayankarBellur/ContextOS")
+    console.print(t)
+
+
+# ── context symbols ───────────────────────────────────────────────────────────
+
+@app.command("symbols")
+def cmd_symbols(
+    query: str = typer.Argument(..., help="Symbol name to search (function, class, method)"),
+    sym_type: Optional[str] = typer.Option(None, "--type", "-t", help="function|class|method"),
+    file_filter: Optional[str] = typer.Option(None, "--file", "-f", help="File path substring filter"),
+    limit: int = typer.Option(20, "--limit", "-n"),
+    fmt: str = typer.Option("text", "--format"),
+):
+    """Search the AST symbol index for functions, classes, and methods."""
+    from contextos.symbols import search_symbols
+    brand_rule("symbols")
+    cfg = _cfg()
+    symbols_dir = cfg.contextos_dir / "symbols"
+
+    if not (symbols_dir / "index.json").exists():
+        empty_state(
+            "Symbol index not built yet.",
+            "context index    (builds symbols automatically)"
+        )
+        raise typer.Exit(0)
+
+    results = search_symbols(
+        query=query, symbols_dir=symbols_dir,
+        sym_type=sym_type, file_pattern=file_filter, limit=limit,
+    )
+
+    if fmt == "json":
+        console.print_json(json.dumps(results, indent=2)); return
+
+    if not results:
+        empty_state(f'No symbols matching "{query}"', f'context symbols "{query}" --type function')
+        return
+
+    t = Table(
+        title=f"[bold]Symbols[/bold]  [dim]{query}[/dim]  [dim]{len(results)} results[/dim]",
+        box=box.ROUNDED, border_style="cyan"
+    )
+    t.add_column("Name", style="bold cyan", min_width=22)
+    t.add_column("Type", style="dim", width=10)
+    t.add_column("Signature", min_width=40)
+    t.add_column("Line", justify="right", style="dim", width=6)
+    t.add_column("File", style="dim")
+
+    for r in results:
+        file_short = "/".join(Path(r.get("file","")).parts[-2:])
+        sig = r.get("signature","")[:60]
+        t.add_row(
+            r.get("name",""),
+            r.get("type",""),
+            sig,
+            str(r.get("line_start","")),
+            file_short,
+        )
+
+    console.print(); console.print(t)
+
+    # Expand first result
+    if results:
+        first = results[0]
+        docstring = first.get("docstring","")
+        body = f"[bold]{first.get('signature','')}[/bold]"
+        if docstring:
+            body += f"\n\n[dim]{docstring[:200]}[/dim]"
+        body += f"\n\n[dim]{first.get('file','')}  :{first.get('line_start','')}–{first.get('line_end','')}[/dim]"
+        console.print(Panel(body,
+            title=f"[bold]Best match — {first.get('name','')}[/bold]",
+            border_style="cyan", padding=(0,2)))
+
+
+# ── context mcp ───────────────────────────────────────────────────────────────
+
+@app.command("mcp")
+def cmd_mcp():
+    """Start the MCP server (stdio transport) for native agent tool integration.
+
+    Add to your agent's mcp.json:
+
+      {
+        "mcpServers": {
+          "contextos": {
+            "command": "context",
+            "args": ["mcp"],
+            "env": { "CONTEXTOS_TOKEN": "<your-token>" }
+          }
+        }
+      }
+    """
+    from contextos.mcp_server import run_mcp_server
+    run_mcp_server()
+
+
+# ── context setup ─────────────────────────────────────────────────────────────
+
+@app.command("setup")
+def cmd_setup(
+    agent: str = typer.Argument(..., help="Agent to configure: kiro|claude|cursor|continue|cline|aider|copilot|all"),
+):
+    """Write agent-specific integration config files for zero-friction setup."""
+    brand_rule("setup")
+    cfg = _cfg()
+    root = _root()
+    written = []
+
+    # Get token hint
+    from contextos.auth import list_tokens
+    tokens = list_tokens(cfg.tokens_dir)
+    token_hint = tokens[0].id + "..." if tokens else "ctx_YOUR_TOKEN_HERE"
+
+    def write(path: Path, content: str, label: str):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            warn(f"{label} already exists — skipping (delete to regenerate)")
+            return
+        path.write_text(content)
+        written.append(str(path.relative_to(root)))
+
+    # mcp.json — works for all MCP-compatible agents
+    mcp_content = json.dumps({
+        "mcpServers": {
+            "contextos": {
+                "command": "context",
+                "args": ["mcp"],
+                "env": {"CONTEXTOS_TOKEN": token_hint}
+            }
+        }
+    }, indent=2)
+
+    cursor_rules = (
+        "# ContextOS Integration\n"
+        "Before every task, retrieve context from ContextOS:\n\n"
+        "curl -s -X POST http://127.0.0.1:8080/context \\\n"
+        '  -H "Authorization: Bearer $CONTEXTOS_TOKEN" \\\n'
+        '  -H "Content-Type: application/json" \\\n'
+        "  -d '{\"query\": \"<your task>\", \"project\": \"<project-name>\"}'\n\n"
+        "After completing a task: run `context index` to update the knowledge graph.\n"
+    )
+
+    continue_config = json.dumps({
+        "models": [],
+        "contextProviders": [{
+            "name": "http",
+            "params": {
+                "url": "http://127.0.0.1:8080/context",
+                "title": "ContextOS",
+                "description": "Local project knowledge vault"
+            }
+        }]
+    }, indent=2)
+
+    copilot_instructions = (
+        "# ContextOS — Project Memory\n\n"
+        "Before starting any task, call the ContextOS context API:\n\n"
+        "```bash\n"
+        "curl -s -X POST http://127.0.0.1:8080/context \\\n"
+        "  -H 'Authorization: Bearer $CONTEXTOS_TOKEN' \\\n"
+        "  -H 'Content-Type: application/json' \\\n"
+        "  -d '{\"query\": \"<task>\", \"project\": \"<project>\"}'\n"
+        "```\n\n"
+        "See AGENTS.md for full integration guide.\n"
+    )
+
+    targets = {
+        "kiro":     [(root / ".kiro" / "hooks" / "contextos-prefetch.json", None, "Kiro hook")],
+        "cursor":   [(root / ".cursorrules", cursor_rules, "Cursor rules")],
+        "continue": [(root / ".continue" / "config.json", continue_config, "Continue.dev config")],
+        "copilot":  [(root / ".github" / "copilot-instructions.md", copilot_instructions, "Copilot instructions")],
+        "mcp":      [(root / "mcp.json", mcp_content, "MCP config (all agents)")],
+    }
+    # Claude and Cline are already handled by CLAUDE.md + AGENTS.md
+
+    if agent == "all":
+        all_targets = [item for items in targets.values() for item in items]
+    else:
+        all_targets = targets.get(agent, [])
+        if not all_targets:
+            error_panel("Unknown Agent", agent, f"Valid: {', '.join(targets.keys())} | all")
+            raise typer.Exit(1)
+
+    for path, content, label in all_targets:
+        if content:
+            write(path, content, label)
+
+    if written:
+        t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+        t.add_column("ic", width=3); t.add_column("path")
+        for w in written:
+            t.add_row(f"[success]{ICONS['success']}[/success]", w)
+        console.print(Panel(t,
+            title=f"[success]{ICONS['success']} Integration Files Written[/success]",
+            border_style="green", padding=(0,1)))
+        console.print()
+        info(f"Set your token: [bold]export CONTEXTOS_TOKEN=<your-token>[/bold]")
+        info("Start the server: [bold]context serve[/bold]")
+    else:
+        warn("No new files written — all targets already exist.")
+
+
 # ── cache commands ────────────────────────────────────────────────────────────
 
 @cache_app.command("ls")
 def cache_ls():
     """List cached chunk files."""
     cfg = _cfg()
-    files = sorted(cfg.cache_dir.glob("*.json"), key=lambda x:-x.stat().st_size)
-    if not files: empty_state("Cache is empty.","context index"); return
+    files = sorted(cfg.cache_dir.glob("*.json"), key=lambda x: -x.stat().st_size)
+    if not files:
+        empty_state("Cache is empty.", "context index"); return
     t = Table(title="[bold]Chunk Cache[/bold]", box=box.ROUNDED, border_style="dim")
     t.add_column("File", style="dim"); t.add_column("Size", justify="right")
-    for f in files[:20]: t.add_row(f.name[:40], _fmt_size(f.stat().st_size))
-    if len(files)>20: t.add_row(f"[dim]…and {len(files)-20} more[/dim]","")
+    for f in files[:20]:
+        t.add_row(f.name[:40], _fmt_size(f.stat().st_size))
+    if len(files) > 20:
+        t.add_row(f"[dim]…and {len(files)-20} more[/dim]", "")
     console.print(); console.print(t)
 
 

@@ -206,3 +206,63 @@ def get_content_hash(filepath: Path) -> Optional[str]:
         return _sha256_of_content(content)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Incremental index hash store
+# ---------------------------------------------------------------------------
+
+def load_hash_store(metadata_dir: Path) -> dict[str, str]:
+    """Load the persisted {doc_id: content_hash} map."""
+    hash_file = metadata_dir / "hashes.json"
+    if not hash_file.exists():
+        return {}
+    try:
+        with open(hash_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_hash_store(metadata_dir: Path, hashes: dict[str, str]) -> None:
+    """Persist the {doc_id: content_hash} map."""
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    hash_file = metadata_dir / "hashes.json"
+    with open(hash_file, "w", encoding="utf-8") as f:
+        json.dump(hashes, f, indent=2)
+
+
+def compute_changed_documents(
+    documents: list,
+    metadata_dir: Path,
+) -> tuple[list, list, list]:
+    """
+    Compare current document content hashes against stored hashes.
+
+    Returns:
+        (new_docs, changed_docs, unchanged_docs)
+        new_docs      — never seen before
+        changed_docs  — content hash differs from stored
+        unchanged_docs — hash matches; skip re-embedding
+    """
+    stored = load_hash_store(metadata_dir)
+    new_docs, changed_docs, unchanged_docs = [], [], []
+
+    for doc in documents:
+        current_hash = _sha256_of_content(doc.content)
+        if doc.id not in stored:
+            new_docs.append(doc)
+        elif stored[doc.id] != current_hash:
+            changed_docs.append(doc)
+        else:
+            unchanged_docs.append(doc)
+
+    return new_docs, changed_docs, unchanged_docs
+
+
+def update_hash_store(metadata_dir: Path, documents: list) -> None:
+    """Update stored hashes for a list of documents."""
+    stored = load_hash_store(metadata_dir)
+    for doc in documents:
+        stored[doc.id] = _sha256_of_content(doc.content)
+    save_hash_store(metadata_dir, stored)

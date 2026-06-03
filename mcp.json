@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "contextos": {
+      "command": "context",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "CONTEXTOS_TOKEN": "ctx_8384557ae3e0d85c..."
+      }
+    }
+  }
+}

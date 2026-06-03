@@ -1,0 +1,13 @@
+{
+  "models": [],
+  "contextProviders": [
+    {
+      "name": "http",
+      "params": {
+        "url": "http://127.0.0.1:8080/context",
+        "title": "ContextOS",
+        "description": "Local project knowledge vault"
+      }
+    }
+  ]
+}

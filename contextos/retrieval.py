@@ -219,6 +219,17 @@ def assemble_context(
     context_text = "\n\n".join(sections)
     token_estimate = _estimate_tokens(context_text)
 
+    # Apply compression if over budget
+    compressed = False
+    if token_estimate > max_tokens:
+        try:
+            from contextos.compressor import compress_text
+            context_text = compress_text(context_text, ratio=max_tokens / token_estimate)
+            token_estimate = _estimate_tokens(context_text)
+            compressed = True
+        except Exception as exc:
+            logger.debug("Compression skipped: %s", exc)
+
     sources = [
         {
             "title": doc_info["title"],
