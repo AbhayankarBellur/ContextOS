@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contextos"
-version = "1.2.0rc1"
+version = "1.4.0rc1"
 description = "Local-first knowledge OS for AI coding agents"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -39,6 +39,10 @@ dependencies = [
     "sumy>=0.11",
     "watchfiles>=0.20",
     "textual>=0.89",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "python-pptx>=0.6",
+    "rank-bm25>=0.2",
 ]
 
 [project.optional-dependencies]

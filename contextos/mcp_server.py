@@ -377,6 +377,29 @@ TOOL_HANDLERS = {
     "get_status":       lambda _:    tool_get_status(),
 }
 
+# Minimum token scope required per tool
+TOOL_SCOPES = {
+    "search_knowledge": "read",
+    "get_context":      "read",
+    "grep_codebase":    "read",
+    "read_file":        "read",
+    "get_graph":        "read",
+    "get_status":       "read",
+}
+
+
+def _validate_mcp_token(raw_token: Optional[str]) -> Optional[object]:
+    """Validate token from env var for MCP calls. Returns Token or None."""
+    if not raw_token:
+        return None
+    try:
+        from contextos.auth import validate_token
+        from contextos.config import load_config
+        cfg = load_config()
+        return validate_token(raw_token, cfg.tokens_dir)
+    except Exception:
+        return None
+
 
 def run_mcp_server():
     """
@@ -407,9 +430,35 @@ def run_mcp_server():
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+        # Token scope enforcement
+        raw_token = os.environ.get("CONTEXTOS_TOKEN", "")
+        token = _validate_mcp_token(raw_token)
+        required_scope = TOOL_SCOPES.get(name, "read")
+
+        if token is None:
+            return [types.TextContent(type="text", text=json.dumps({
+                "error": "unauthorized",
+                "message": "CONTEXTOS_TOKEN env var missing or invalid. "
+                           "Run: context token create agent --scope read"
+            }))]
+
+        if token.is_expired():
+            return [types.TextContent(type="text", text=json.dumps({
+                "error": "token_expired",
+                "message": f"Token {token.id} has expired. Create a new one."
+            }))]
+
+        from contextos.schema import TokenScope
+        if not token.has_scope(TokenScope(required_scope)):
+            return [types.TextContent(type="text", text=json.dumps({
+                "error": "insufficient_scope",
+                "message": f"Tool '{name}' requires scope '{required_scope}', "
+                           f"token has '{token.scope.value if token.scope else 'none'}'"
+            }))]
+
         handler = TOOL_HANDLERS.get(name)
         if not handler:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+            return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
         try:
             result = handler(arguments)
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]

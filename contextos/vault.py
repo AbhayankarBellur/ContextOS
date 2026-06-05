@@ -135,24 +135,37 @@ def parse_document(filepath: Path, root: Path) -> Optional[Document]:
 
 def scan_vault(vault_path: Path) -> list[Document]:
     """
-    Walk a vault directory, parse all .md files, return Document list.
+    Walk a vault directory, parse all supported files, return Document list.
+    Supports: .md (native), .pdf, .docx, .pptx (via ingestors).
     Skips files in hidden directories and .contextos/.
     """
+    from contextos.ingestors import can_ingest, ingest, supported_extensions
+
     vault_path = vault_path.resolve()
     if not vault_path.exists():
         logger.error("Vault path does not exist: %s", vault_path)
         return []
 
+    SUPPORTED = {".md"} | set(supported_extensions())
     documents: list[Document] = []
     skipped = 0
 
-    for md_file in vault_path.rglob("*.md"):
+    for file_path in vault_path.rglob("*"):
+        if file_path.suffix.lower() not in SUPPORTED:
+            continue
         # Skip hidden dirs and .contextos internals
-        parts = md_file.parts
-        if any(p.startswith(".") for p in parts):
+        if any(p.startswith(".") for p in file_path.parts):
+            continue
+        if not file_path.is_file():
             continue
 
-        doc = parse_document(md_file, vault_path)
+        if file_path.suffix.lower() == ".md":
+            doc = parse_document(file_path, vault_path)
+        elif can_ingest(file_path):
+            doc = _ingest_document(file_path, vault_path, ingest)
+        else:
+            continue
+
         if doc:
             documents.append(doc)
         else:
@@ -160,6 +173,38 @@ def scan_vault(vault_path: Path) -> list[Document]:
 
     logger.info("Scanned %d documents from '%s' (%d skipped)", len(documents), vault_path, skipped)
     return documents
+
+
+def _ingest_document(filepath: Path, root: Path, ingest_fn) -> Optional[Document]:
+    """Convert a non-Markdown file to a Document via an ingestor."""
+    markdown_content = ingest_fn(filepath)
+    if not markdown_content:
+        return None
+
+    # Parse the generated Markdown (has frontmatter injected by ingestor)
+    try:
+        import frontmatter as fm_lib
+        post = fm_lib.loads(markdown_content)
+        meta = post.metadata
+    except Exception:
+        meta = {}
+
+    doc_id = _sha256_of_path(filepath, root)
+    title  = _extract_title(post.content if 'post' in dir() else markdown_content, filepath)
+
+    return Document(
+        id=doc_id,
+        project=str(meta.get("project", "unknown")),
+        type=_parse_document_type(meta.get("type")),
+        domain=meta.get("domain"),
+        status=_parse_document_status(meta.get("status")),
+        owner=meta.get("owner"),
+        updated_at=_parse_date(meta.get("updated_at")),
+        tags=_parse_tags(meta.get("tags")),
+        title=title,
+        filepath=filepath,
+        content=markdown_content,
+    )
 
 
 def write_registry(documents: list[Document], metadata_dir: Path) -> Path:

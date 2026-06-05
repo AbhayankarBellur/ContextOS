@@ -160,6 +160,147 @@ class VectorStore:
             logger.error("Search failed: %s", exc)
             return []
 
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_vector: list[float],
+        project: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        domain_filter: Optional[str] = None,
+        limit: int = 5,
+        alpha: float = 0.7,
+    ) -> list[dict]:
+        """
+        Hybrid search: combines vector similarity with BM25 keyword search.
+        Uses Reciprocal Rank Fusion (RRF) to merge ranked lists.
+        alpha controls vector weight (0.0 = BM25 only, 1.0 = vector only).
+
+        Falls back to vector-only search if BM25 fails.
+        """
+        # Get more candidates for fusion
+        fetch_n = min(limit * 4, 50)
+
+        # --- Vector search ---
+        vector_results = self.search(
+            query_vector=query_vector,
+            project=project,
+            type_filter=type_filter,
+            domain_filter=domain_filter,
+            limit=fetch_n,
+        )
+
+        if not vector_results or alpha >= 0.99:
+            return vector_results[:limit]
+
+        # --- BM25 keyword search ---
+        bm25_results = self._bm25_search(
+            query_text=query_text,
+            project=project,
+            type_filter=type_filter,
+            domain_filter=domain_filter,
+            limit=fetch_n,
+        )
+
+        if not bm25_results or alpha <= 0.01:
+            return bm25_results[:limit]
+
+        # --- Reciprocal Rank Fusion ---
+        return self._rrf_merge(vector_results, bm25_results, limit=limit, alpha=alpha)
+
+    def _bm25_search(
+        self,
+        query_text: str,
+        project: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        domain_filter: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """BM25 keyword search over chunk content using rank_bm25."""
+        table = self._get_table()
+        if table is None:
+            return []
+        try:
+            from rank_bm25 import BM25Okapi
+
+            df = table.to_pandas()
+
+            # Apply same metadata filters
+            if project:
+                df = df[df["project"] == project]
+            if type_filter:
+                df = df[df["type"] == type_filter]
+            if domain_filter:
+                df = df[df["domain"] == domain_filter]
+
+            if df.empty:
+                return []
+
+            # Tokenise corpus
+            corpus  = df["content"].fillna("").tolist()
+            tokenised = [doc.lower().split() for doc in corpus]
+            bm25   = BM25Okapi(tokenised)
+            scores = bm25.get_scores(query_text.lower().split())
+
+            # Get top-limit indices by score
+            import numpy as np
+            top_indices = np.argsort(scores)[::-1][:limit]
+
+            results = []
+            for idx in top_indices:
+                if scores[idx] <= 0:
+                    break
+                row = df.iloc[idx].to_dict()
+                row["_bm25_score"] = float(scores[idx])
+                results.append(row)
+            return results
+
+        except Exception as exc:
+            logger.debug("BM25 search failed: %s", exc)
+            return []
+
+    @staticmethod
+    def _rrf_merge(
+        vector_results: list[dict],
+        bm25_results: list[dict],
+        limit: int,
+        alpha: float = 0.7,
+        k: int = 60,
+    ) -> list[dict]:
+        """
+        Reciprocal Rank Fusion with weighted alpha.
+        score = alpha * (1/(k+rank_vector)) + (1-alpha) * (1/(k+rank_bm25))
+        """
+        id_to_result: dict[str, dict] = {}
+        vector_scores: dict[str, float] = {}
+        bm25_scores:   dict[str, float] = {}
+
+        for rank, r in enumerate(vector_results, 1):
+            cid = r.get("id", str(rank))
+            id_to_result[cid] = r
+            vector_scores[cid] = 1.0 / (k + rank)
+
+        for rank, r in enumerate(bm25_results, 1):
+            cid = r.get("id", str(rank))
+            if cid not in id_to_result:
+                id_to_result[cid] = r
+            bm25_scores[cid] = 1.0 / (k + rank)
+
+        # Compute fused scores
+        fused: dict[str, float] = {}
+        for cid in id_to_result:
+            vs = vector_scores.get(cid, 0.0)
+            bs = bm25_scores.get(cid, 0.0)
+            fused[cid] = alpha * vs + (1 - alpha) * bs
+
+        # Sort by fused score, return top-limit
+        sorted_ids = sorted(fused, key=lambda x: fused[x], reverse=True)[:limit]
+        results = []
+        for cid in sorted_ids:
+            r = dict(id_to_result[cid])
+            r["_rrf_score"] = fused[cid]
+            results.append(r)
+        return results
+
     def count_documents(self) -> int:
         """Return number of unique documents indexed."""
         table = self._get_table()

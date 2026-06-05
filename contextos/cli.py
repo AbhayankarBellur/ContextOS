@@ -1637,6 +1637,284 @@ def cmd_dashboard():
     run_dashboard(cfg)
 
 
+# ── context start (one-command bootstrap) ────────────────────────────────────
+
+@app.command("start")
+def cmd_start(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Project name"),
+    vault: Optional[str] = typer.Option(None, "--vault", "-v", help="Vault path (existing or new)"),
+    template: str = typer.Option("default", "--template", "-t", help="Vault template if creating new"),
+    port: int = typer.Option(8080, "--port", help="API server port"),
+    skip_serve: bool = typer.Option(False, "--no-serve", help="Skip starting the API server"),
+):
+    """
+    One-command bootstrap. Initialises, imports, indexes, and starts the server.
+    This is the recommended entry point for new users.
+
+      context start
+      context start --name my-api --vault ./docs
+
+    """
+    print_logo()
+    from contextos.config import get_contextos_dir, save_config, Config
+    from contextos.vault import scan_vault, write_registry
+    from contextos.auth import generate_token
+    from contextos.schema import TokenScope
+
+    root = _root()
+    console.print(Panel(
+        "[dim]Setting up ContextOS in one command.\n"
+        "This will initialise, import your vault, index it, create a token, and start the server.[/dim]",
+        border_style="cyan", padding=(0,2)
+    ))
+    console.print()
+
+    # Step 1 — Get project name interactively if not supplied
+    if not name:
+        name = typer.prompt("  Project name", default=root.name)
+
+    # Step 2 — Vault path
+    if not vault:
+        vault_default = str(root / "docs" / "vault")
+        vault = typer.prompt("  Vault path (existing dir, or new to scaffold)", default=vault_default)
+
+    vault_path = Path(vault).resolve()
+
+    # Step 3 — Init
+    with console.status("[cyan]Initialising .contextos/…[/cyan]"):
+        cfg = Config(root=root, project_name=name)
+        for d in [cfg.contextos_dir, cfg.embeddings_dir, cfg.lancedb_dir,
+                  cfg.graph_dir, cfg.tokens_dir, cfg.cache_dir, cfg.logs_dir, cfg.metadata_dir]:
+            d.mkdir(parents=True, exist_ok=True)
+        save_config(cfg)
+        gi = root / ".gitignore"
+        if gi.exists():
+            if ".contextos/" not in gi.read_text():
+                gi.open("a").write("\n.contextos/\n")
+        else:
+            gi.write_text(".contextos/\n")
+    ok(f"Initialized [bold]{cfg.contextos_dir}[/bold]")
+
+    # Step 4 — Scaffold vault if it doesn't exist
+    if not vault_path.exists() or not any(vault_path.iterdir()):
+        with console.status(f"[cyan]Scaffolding vault from '{template}' template…[/cyan]"):
+            from contextos.scaffolder import scaffold_vault
+            created = scaffold_vault(vault_path, template_name=template, variables={
+                "project_name": name, "team": "engineering", "domain_name": "core",
+            })
+        ok(f"Vault scaffolded: [bold]{len(created)}[/bold] files at [bold]{vault_path}[/bold]")
+    else:
+        ok(f"Using existing vault: [bold]{vault_path}[/bold]")
+
+    # Step 5 — Import vault
+    with console.status("[cyan]Scanning vault documents…[/cyan]"):
+        docs = scan_vault(vault_path)
+        if docs:
+            cfg.vault_paths = [vault_path]
+            registry_path = write_registry(docs, cfg.metadata_dir)
+            save_config(cfg)
+    ok(f"Imported [bold]{len(docs)}[/bold] documents")
+
+    if not docs:
+        warn("No documents found. Add Markdown files to your vault and run [cyan]context index[/cyan].")
+        raise typer.Exit(0)
+
+    # Step 6 — Index
+    console.print()
+    console.rule("[cyan]Building index[/cyan]", style="cyan")
+    from contextos.vault import compute_changed_documents, update_hash_store
+    from contextos.chunker import chunk_all_documents
+    from contextos.embedder import Embedder
+    from contextos.store import VectorStore
+    from contextos.graph import GraphBuilder
+    from contextos.schema import Document, DocumentType, DocumentStatus
+    from datetime import date as _date
+
+    all_docs: list[Document] = []
+    registry = docs  # docs already parsed
+
+    for doc in registry:
+        all_docs.append(doc)
+
+    doc_map = {d.id: d for d in all_docs}
+
+    with console.status("[cyan]Chunking…[/cyan]"):
+        chunks_by_doc = chunk_all_documents(all_docs, cfg.cache_dir)
+
+    console.print(f"  [dim]Chunking:[/dim] {sum(len(v) for v in chunks_by_doc.values())} chunks")
+
+    embedder = Embedder(cfg.embeddings_dir)
+    all_chunks = [c for cl in chunks_by_doc.values() for c in cl]
+
+    with Progress(SpinnerColumn(), TextColumn("[cyan]Embedding…[/cyan]"), BarColumn(bar_width=28),
+                  TaskProgressColumn(), console=console, transient=True) as prog:
+        task = prog.add_task("e", total=len(all_chunks))
+        BATCH = 32
+        texts = [c.content for c in all_chunks]
+        for i in range(0, len(all_chunks), BATCH):
+            bt = texts[i:i+BATCH]; bc = all_chunks[i:i+BATCH]
+            vecs = embedder.embed(bt)
+            for c, v in zip(bc, vecs): c.embedding = v
+            prog.advance(task, len(bc))
+
+    with console.status("[cyan]Writing to LanceDB…[/cyan]"):
+        store = VectorStore(cfg.lancedb_dir)
+        written = store.upsert_chunks(all_chunks, doc_map)
+        gb = GraphBuilder(); gb.build(all_docs); gb.save(cfg.graph_dir)
+        update_hash_store(cfg.metadata_dir, all_docs)
+
+    import time as _time
+    cfg.metadata_dir.mkdir(exist_ok=True)
+    (cfg.metadata_dir / "index_meta.json").write_text(json.dumps({
+        "last_indexed": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "document_count": len(all_docs), "chunk_count": written,
+        "embedding_model": cfg.embedding_model,
+    }, indent=2))
+
+    ok(f"Indexed [bold]{written}[/bold] chunks from [bold]{len(all_docs)}[/bold] documents")
+
+    # Step 7 — Token
+    with console.status("[cyan]Creating API token…[/cyan]"):
+        raw_token, token = generate_token(f"{name}-agent", cfg.tokens_dir, scope=TokenScope.write)
+
+    console.print()
+    console.print(Panel(
+        f"[dim]Token (save this — shown once):[/dim]\n\n"
+        f"  [bold cyan]{raw_token}[/bold cyan]\n\n"
+        f"  [dim]export CONTEXTOS_TOKEN={raw_token}[/dim]",
+        title=f"[success]{ICONS['success']} Token Created[/success]",
+        border_style="green", padding=(0,2)
+    ))
+
+    from contextos.cache_layer import invalidate_cache
+    invalidate_cache()
+
+    if skip_serve:
+        console.print()
+        ok(f"[bold]{name}[/bold] is ready.")
+        next_action(f"context serve --port {port}", "Start the API server when ready")
+        return
+
+    # Step 8 — Serve
+    console.print()
+    console.print(Panel(
+        f"[bold green]{ICONS['success']} {name} is ready.[/bold green]\n\n"
+        f"  [dim]Server:[/dim]  [bold]http://127.0.0.1:{port}[/bold]\n"
+        f"  [dim]Health:[/dim]  [bold]http://127.0.0.1:{port}/health[/bold]\n"
+        f"  [dim]Docs:[/dim]    [bold]http://127.0.0.1:{port}/docs[/bold]\n\n"
+        f"  [dim]Token set:[/dim]  export CONTEXTOS_TOKEN={raw_token[:20]}…\n\n"
+        f"  [dim yellow]Ctrl+C to stop[/dim yellow]",
+        title="[bold]ContextOS Ready[/bold]", border_style="green", padding=(0,2)
+    ))
+    from contextos.api import run_server
+    run_server(port=port)
+
+
+# ── context eval ──────────────────────────────────────────────────────────────
+
+@app.command("eval")
+def cmd_eval(
+    questions: str = typer.Option("eval/questions.json", "--questions", "-q",
+                                   help="Path to eval questions JSON file"),
+    output: Optional[str] = typer.Option(None, "--output", "-o",
+                                          help="Save results to JSON file"),
+    k: int = typer.Option(5, "--k", help="Top-K for Hit Rate calculation"),
+    project: Optional[str] = typer.Option(None, "--project", "-p"),
+    hybrid: bool = typer.Option(True, "--hybrid/--no-hybrid",
+                                 help="Use hybrid search (BM25 + vector)"),
+    alpha: float = typer.Option(0.7, "--alpha", help="Hybrid vector weight (0=BM25, 1=vector)"),
+):
+    """
+    Evaluate retrieval quality against a golden question set.
+
+    Measures Hit Rate @K, MRR, avg top-1 score, and latency.
+    Use this to tune hybrid search alpha, chunk size, or embedding quality.
+
+    Example:
+      context eval --questions eval/questions.json --k 5
+    """
+    from contextos.evaluator import load_questions, run_eval, save_results, EvalQuestion
+    from contextos.embedder import Embedder
+    from contextos.store import VectorStore
+    brand_rule("eval")
+    cfg = _cfg()
+
+    q_path = Path(questions)
+    if not q_path.exists():
+        # Try the example file
+        example = Path("eval/questions.json.example")
+        if example.exists():
+            warn(f"Questions file not found. Using example: {example}")
+            q_path = example
+        else:
+            error_panel("Questions File Not Found", str(q_path),
+                        "Create eval/questions.json or use --questions path")
+            raise typer.Exit(1)
+
+    with console.status("[cyan]Loading questions…[/cyan]"):
+        eval_questions = load_questions(q_path)
+        # Override k if specified
+        for q in eval_questions:
+            q.k = k
+            if project:
+                q.project = project
+
+    console.print(f"  [dim]Loaded {len(eval_questions)} questions[/dim]")
+    console.print(f"  [dim]Mode: {'hybrid (BM25 + vector)' if hybrid else 'vector only'} · alpha={alpha}[/dim]\n")
+
+    with console.status(f"[cyan]{ICONS['spin']} Running evaluation…[/cyan]"):
+        embedder = Embedder(cfg.embeddings_dir)
+        store    = VectorStore(cfg.lancedb_dir)
+        summary  = run_eval(eval_questions, embedder, store,
+                            use_hybrid=hybrid, hybrid_alpha=alpha)
+
+    # Results table per question
+    t = Table(
+        title=f"[bold]Retrieval Evaluation[/bold]  [dim]{len(eval_questions)} questions · @{k}[/dim]",
+        box=box.ROUNDED, border_style="cyan"
+    )
+    t.add_column("Query", min_width=30, no_wrap=False)
+    t.add_column("Expected", style="dim", min_width=20)
+    t.add_column("Hit", width=5, justify="center")
+    t.add_column("Rank", width=5, justify="right")
+    t.add_column("Score", width=7, justify="right")
+    t.add_column("ms", width=6, justify="right", style="dim")
+
+    for r in summary.results:
+        hit_icon  = f"[success]{ICONS['success']}[/success]" if r.hit else f"[error]{ICONS['error']}[/error]"
+        rank_str  = str(r.rank) if r.rank > 0 else "—"
+        score_str = f"[{score_style(r.top1_score)}]{r.top1_score:.2f}[/{score_style(r.top1_score)}]"
+        t.add_row(
+            r.question.query[:45],
+            r.question.expected_title[:28],
+            hit_icon, rank_str, score_str, str(r.latency_ms)
+        )
+
+    console.print(t)
+
+    # Summary panel
+    hr_color  = "green" if summary.hit_rate >= 0.8 else "yellow" if summary.hit_rate >= 0.6 else "red"
+    mrr_color = "green" if summary.mrr >= 0.7     else "yellow" if summary.mrr >= 0.5     else "red"
+
+    st = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    st.add_column("k", style="dim", width=22); st.add_column("v", style="bold")
+    st.add_row("Hit Rate @K",      f"[{hr_color}]{summary.hit_rate:.1%}[/{hr_color}]")
+    st.add_row("MRR",              f"[{mrr_color}]{summary.mrr:.3f}[/{mrr_color}]")
+    st.add_row("Avg top-1 score",  f"{summary.avg_top1_score:.3f}")
+    st.add_row("No-result queries",f"[{'red' if summary.no_result_pct > 0 else 'green'}]{summary.no_result_pct:.1%}[/{'red' if summary.no_result_pct > 0 else 'green'}]")
+    st.add_row("Avg latency",      f"{summary.avg_latency_ms:.0f} ms")
+    st.add_row("Search mode",      "hybrid (BM25+vector)" if hybrid else "vector only")
+
+    console.print(Panel(st, title="[bold]Summary[/bold]", border_style="cyan", padding=(0,1)))
+
+    if output:
+        out_path = Path(output)
+        save_results(summary, out_path)
+        ok(f"Results saved to [bold]{out_path}[/bold]")
+    else:
+        info("Use [cyan]--output eval/results.json[/cyan] to save detailed results")
+
+
 # ── vault sub-commands ────────────────────────────────────────────────────────
 
 vault_app = typer.Typer(help="Vault scaffolding and validation")

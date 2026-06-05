@@ -1,0 +1,37 @@
+[
+  {
+    "query": "how does payment retry work",
+    "expected_title": "Payment Domain Model",
+    "expected_type": "domain",
+    "project": "my-project",
+    "k": 5
+  },
+  {
+    "query": "booking cancellation policy",
+    "expected_title": "Booking Flow",
+    "expected_type": "workflow",
+    "project": "my-project",
+    "k": 5
+  },
+  {
+    "query": "why did we choose postgres",
+    "expected_title": "ADR-001: Use PostgreSQL as Primary Database",
+    "expected_type": "adr",
+    "project": "my-project",
+    "k": 5
+  },
+  {
+    "query": "booking domain entities and fields",
+    "expected_title": "Booking Domain Model",
+    "expected_type": "domain",
+    "project": "my-project",
+    "k": 5
+  },
+  {
+    "query": "current sprint tasks and blockers",
+    "expected_title": "Current Sprint",
+    "expected_type": "context",
+    "project": "my-project",
+    "k": 5
+  }
+]

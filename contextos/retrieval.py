@@ -50,11 +50,13 @@ def search(
     domain_filter: Optional[str] = None,
     limit: int = 5,
     include_graph: bool = False,
+    use_hybrid: bool = True,
+    hybrid_alpha: float = 0.7,
 ) -> SearchResponse:
     """
     Full search pipeline:
     1. Embed query
-    2. Metadata pre-filter + vector search
+    2. Hybrid search (BM25 + vector RRF) or vector-only
     3. Optional graph expansion
     4. Return ranked results
     """
@@ -63,21 +65,36 @@ def search(
     # Step 1: Embed query
     query_vec = embedder.embed_query(query)
 
-    # Step 2: Vector search with pre-filter
-    raw_results = store.search(
-        query_vector=query_vec,
-        project=project,
-        type_filter=type_filter,
-        domain_filter=domain_filter,
-        limit=limit * 2,  # over-fetch for reranking
-    )
+    # Step 2: Hybrid or vector search
+    if use_hybrid:
+        raw_results = store.hybrid_search(
+            query_text=query,
+            query_vector=query_vec,
+            project=project,
+            type_filter=type_filter,
+            domain_filter=domain_filter,
+            limit=limit * 2,
+            alpha=hybrid_alpha,
+        )
+    else:
+        raw_results = store.search(
+            query_vector=query_vec,
+            project=project,
+            type_filter=type_filter,
+            domain_filter=domain_filter,
+            limit=limit * 2,
+        )
 
     # Step 3: Build result items
     result_items = []
     for r in raw_results:
-        # LanceDB returns _distance (L2). Convert to similarity.
-        distance = float(r.get("_distance", 1.0))
-        score = max(0.0, 1.0 - distance)
+        # Use RRF score if available (hybrid), else convert L2 distance
+        if "_rrf_score" in r:
+            score = float(r["_rrf_score"]) * 100  # scale for display
+            score = min(score, 1.0)
+        else:
+            distance = float(r.get("_distance", 1.0))
+            score = max(0.0, 1.0 - distance)
 
         # Apply priority boost
         doc_type = r.get("type", "note")
@@ -131,10 +148,12 @@ def assemble_context(
 
     # Fetch more candidates than we need, we'll budget-trim
     query_vec = embedder.embed_query(query)
-    raw_results = store.search(
+    raw_results = store.hybrid_search(
+        query_text=query,
         query_vector=query_vec,
         project=project,
         limit=30,
+        alpha=0.7,
     )
 
     if not raw_results:

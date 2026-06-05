@@ -34,3 +34,8 @@ Thumbs.db
 
 # User-specific agent configs (use mcp.json.example as template)
 mcp.json
+
+# Eval outputs (generated, not source)
+eval/results*.json
+eval/*.json
+!eval/*.json.example
