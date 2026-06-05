@@ -1761,6 +1761,12 @@ def cmd_start(
         store = VectorStore(cfg.lancedb_dir)
         written = store.upsert_chunks(all_chunks, doc_map)
         gb = GraphBuilder(); gb.build(all_docs); gb.save(cfg.graph_dir)
+        # Build symbol index
+        try:
+            from contextos.symbols import build_symbol_index
+            build_symbol_index(cfg.vault_paths, cfg.contextos_dir / "symbols")
+        except Exception:
+            pass
         update_hash_store(cfg.metadata_dir, all_docs)
 
     import time as _time

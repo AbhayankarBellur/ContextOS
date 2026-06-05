@@ -133,11 +133,12 @@ def parse_document(filepath: Path, root: Path) -> Optional[Document]:
     )
 
 
-def scan_vault(vault_path: Path) -> list[Document]:
+def scan_vault(vault_path: Path, project_name: str = "unknown") -> list[Document]:
     """
     Walk a vault directory, parse all supported files, return Document list.
     Supports: .md (native), .pdf, .docx, .pptx (via ingestors).
     Skips files in hidden directories and .contextos/.
+    project_name is injected into non-Markdown docs that have project: unknown.
     """
     from contextos.ingestors import can_ingest, ingest, supported_extensions
 
@@ -153,7 +154,6 @@ def scan_vault(vault_path: Path) -> list[Document]:
     for file_path in vault_path.rglob("*"):
         if file_path.suffix.lower() not in SUPPORTED:
             continue
-        # Skip hidden dirs and .contextos internals
         if any(p.startswith(".") for p in file_path.parts):
             continue
         if not file_path.is_file():
@@ -162,7 +162,7 @@ def scan_vault(vault_path: Path) -> list[Document]:
         if file_path.suffix.lower() == ".md":
             doc = parse_document(file_path, vault_path)
         elif can_ingest(file_path):
-            doc = _ingest_document(file_path, vault_path, ingest)
+            doc = _ingest_document(file_path, vault_path, ingest, project_name=project_name)
         else:
             continue
 
@@ -175,13 +175,12 @@ def scan_vault(vault_path: Path) -> list[Document]:
     return documents
 
 
-def _ingest_document(filepath: Path, root: Path, ingest_fn) -> Optional[Document]:
+def _ingest_document(filepath: Path, root: Path, ingest_fn, project_name: str = "unknown") -> Optional[Document]:
     """Convert a non-Markdown file to a Document via an ingestor."""
     markdown_content = ingest_fn(filepath)
     if not markdown_content:
         return None
 
-    # Parse the generated Markdown (has frontmatter injected by ingestor)
     try:
         import frontmatter as fm_lib
         post = fm_lib.loads(markdown_content)
@@ -190,11 +189,13 @@ def _ingest_document(filepath: Path, root: Path, ingest_fn) -> Optional[Document
         meta = {}
 
     doc_id = _sha256_of_path(filepath, root)
-    title  = _extract_title(post.content if 'post' in dir() else markdown_content, filepath)
+    # Use the caller-supplied project_name — never leave as 'unknown' when we know better
+    effective_project = project_name if project_name != "unknown" else str(meta.get("project", "unknown"))
+    title = _extract_title(markdown_content, filepath)
 
     return Document(
         id=doc_id,
-        project=str(meta.get("project", "unknown")),
+        project=effective_project,
         type=_parse_document_type(meta.get("type")),
         domain=meta.get("domain"),
         status=_parse_document_status(meta.get("status")),

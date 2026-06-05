@@ -388,15 +388,20 @@ TOOL_SCOPES = {
 }
 
 
+_mcp_cfg = None
+
+
 def _validate_mcp_token(raw_token: Optional[str]) -> Optional[object]:
-    """Validate token from env var for MCP calls. Returns Token or None."""
+    """Validate token from env var for MCP calls. Config cached at module level."""
     if not raw_token:
         return None
+    global _mcp_cfg
     try:
+        if _mcp_cfg is None:
+            from contextos.config import load_config
+            _mcp_cfg = load_config()
         from contextos.auth import validate_token
-        from contextos.config import load_config
-        cfg = load_config()
-        return validate_token(raw_token, cfg.tokens_dir)
+        return validate_token(raw_token, _mcp_cfg.tokens_dir)
     except Exception:
         return None
 

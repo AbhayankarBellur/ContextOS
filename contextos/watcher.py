@@ -58,24 +58,31 @@ class VaultWatcher:
             logger.warning("watchfiles not available — vault watch disabled")
             return
 
+        # Build the set of extensions to watch dynamically from the ingestor registry
+        try:
+            from contextos.ingestors import supported_extensions
+            watched_extensions = frozenset({".md"} | set(supported_extensions()))
+        except Exception:
+            watched_extensions = frozenset({".md"})
+
         watch_paths = [str(p) for p in self.vault_paths if p.exists()]
         if not watch_paths:
             logger.warning("No valid vault paths to watch")
             return
 
-        logger.info("Watching: %s", watch_paths)
+        logger.info("Watching: %s for extensions: %s", watch_paths, watched_extensions)
 
         try:
             for changes in watch(*watch_paths, stop_event=self._stop_event, yield_on_timeout=True, poll_delay_ms=500):
                 if self._stop_event.is_set():
                     break
                 if not changes:
-                    # Timeout — process any debounced pending changes
                     self._flush_pending()
                     continue
 
                 for change_type, path in changes:
-                    if not path.endswith(".md"):
+                    ext = Path(path).suffix.lower()
+                    if ext not in watched_extensions:
                         continue
                     if change_type in (Change.added, Change.modified):
                         with self._lock:
@@ -105,16 +112,16 @@ class VaultWatcher:
             self._reindex_file(Path(path))
 
     def _reindex_file(self, filepath: Path) -> None:
-        """Re-index a single changed file."""
+        """Re-index a single changed file — routes through ingestor for non-Markdown."""
         t0 = time.time()
         logger.info("Re-indexing changed file: %s", filepath.name)
 
         try:
-            from contextos.vault import parse_document, load_registry, write_registry
+            from contextos.vault import parse_document, _ingest_document, load_registry, write_registry
+            from contextos.ingestors import can_ingest, ingest
             from contextos.chunker import chunk_document
             from contextos.embedder import Embedder
             from contextos.store import VectorStore
-            from contextos.schema import Document
 
             cfg = self.config
 
@@ -132,8 +139,17 @@ class VaultWatcher:
                 logger.warning("Cannot determine vault root for %s", filepath)
                 return
 
-            # Parse the changed document
-            doc = parse_document(filepath, vault_root)
+            # Route to correct parser
+            if filepath.suffix.lower() == ".md":
+                doc = parse_document(filepath, vault_root)
+            elif can_ingest(filepath):
+                # Try to get project name from config
+                project_name = getattr(cfg, "project_name", "unknown")
+                doc = _ingest_document(filepath, vault_root, ingest, project_name=project_name)
+            else:
+                logger.debug("No ingestor for %s — skipping", filepath.suffix)
+                return
+
             if doc is None:
                 logger.warning("Failed to parse %s", filepath)
                 return
@@ -146,26 +162,26 @@ class VaultWatcher:
 
             # Embed
             embedder = Embedder(cfg.embeddings_dir)
-            texts = [c.content for c in chunks]
-            vectors = embedder.embed(texts)
+            texts    = [c.content for c in chunks]
+            vectors  = embedder.embed(texts)
             for chunk, vec in zip(chunks, vectors):
                 chunk.embedding = vec
 
             # Upsert to LanceDB
-            store = VectorStore(cfg.lancedb_dir)
+            store   = VectorStore(cfg.lancedb_dir)
             written = store.upsert_chunks(chunks, {doc.id: doc})
 
             elapsed = time.time() - t0
-            logger.info(
-                "Re-indexed %s: %d chunks in %.2fs",
-                filepath.name, written, elapsed
-            )
+            logger.info("Re-indexed %s: %d chunks in %.2fs", filepath.name, written, elapsed)
 
-            # Update hash store for this file
+            # Update hash store
             from contextos.vault import update_hash_store
             update_hash_store(cfg.metadata_dir, [doc])
 
-            # Call optional callback (e.g., update server state)
+            # Invalidate context cache
+            from contextos.cache_layer import invalidate_cache
+            invalidate_cache()
+
             if self.on_reindex:
                 self.on_reindex(doc, chunks)
 

@@ -155,7 +155,7 @@ def require_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(
 
 def require_scope(required: TokenScope):
     """Dependency factory: enforce a minimum token scope."""
-    def _check(token=Depends(require_scope(TokenScope.read))):
+    def _check(token=Depends(require_token)):
         if not token.has_scope(required):
             raise HTTPException(
                 status_code=403,
@@ -242,6 +242,8 @@ def search(
         domain_filter=request.domain,
         limit=request.limit,
         include_graph=request.include_graph,
+        use_hybrid=request.use_hybrid,
+        hybrid_alpha=request.hybrid_alpha,
     )
 
     # Log to session if provided
@@ -295,6 +297,8 @@ def context(
         project=request.project or None,
         max_tokens=request.max_tokens,
         priority_order=request.priority_order,
+        use_hybrid=getattr(request, 'use_hybrid', True),
+        hybrid_alpha=getattr(request, 'hybrid_alpha', 0.7),
     )
 
     # Store in cache

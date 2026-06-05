@@ -58,7 +58,8 @@ def get_disk_breakdown(contextos_dir: Path) -> dict:
 
 def get_projects_breakdown(contextos_dir: Path) -> list[dict]:
     """
-    List all projects found in the LanceDB index with their chunk counts and estimated sizes.
+    List all projects found in the LanceDB index with their chunk counts and doc counts.
+    Single table scan — no N+1 queries.
     """
     lancedb_dir = contextos_dir / "lancedb"
     if not lancedb_dir.exists():
@@ -68,15 +69,18 @@ def get_projects_breakdown(contextos_dir: Path) -> list[dict]:
         db = lancedb.connect(str(lancedb_dir))
         if "chunks" not in db.table_names():
             return []
-        table = db.open_table("chunks")
-        df = table.to_pandas()[["project", "doc_id"]].drop_duplicates()
+        # Single full scan — reuse for all groupby operations
+        full_df = db.open_table("chunks").to_pandas()
+        id_df   = full_df[["project", "doc_id"]].drop_duplicates()
+
         projects = []
-        for project, group in df.groupby("project"):
-            doc_count = group["doc_id"].nunique()
+        for project, group in id_df.groupby("project"):
+            doc_count   = group["doc_id"].nunique()
+            chunk_count = len(full_df[full_df["project"] == project])
             projects.append({
-                "project": project,
+                "project":   project,
                 "documents": doc_count,
-                "chunks": len(table.to_pandas()[table.to_pandas()["project"] == project]),
+                "chunks":    chunk_count,
             })
         return sorted(projects, key=lambda x: -x["documents"])
     except Exception as exc:

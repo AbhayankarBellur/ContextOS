@@ -23,7 +23,9 @@ DEFAULT_CONFIG = {
     "port": 8080,
     "log_level": "info",
     "embedding_model": "BAAI/bge-small-en-v1.5",
-    "version": "1.0.0-rc1",
+    "version": "1.4.0-rc1",
+    "hybrid_search": True,
+    "hybrid_alpha": 0.7,
 }
 
 
@@ -56,7 +58,9 @@ def load_config(root: Optional[Path] = None) -> "Config":
         port=int(data.get("port", 8080)),
         log_level=data.get("log_level", "info"),
         embedding_model=data.get("embedding_model", "BAAI/bge-small-en-v1.5"),
-        version=data.get("version", "1.0.0-rc1"),
+        version=data.get("version", "1.4.0-rc1"),
+        hybrid_search=bool(data.get("hybrid_search", True)),
+        hybrid_alpha=float(data.get("hybrid_alpha", 0.7)),
         root=root or Path.cwd(),
     )
 
@@ -65,12 +69,14 @@ def save_config(config: "Config") -> None:
     """Persist config to .contextos/config.yaml."""
     config_path = get_config_path(config.root)
     data = {
-        "project_name": config.project_name,
-        "vault_paths": [str(p) for p in config.vault_paths],
-        "port": config.port,
-        "log_level": config.log_level,
-        "embedding_model": config.embedding_model,
-        "version": config.version,
+        "project_name":   config.project_name,
+        "vault_paths":    [str(p) for p in config.vault_paths],
+        "port":           config.port,
+        "log_level":      config.log_level,
+        "embedding_model":config.embedding_model,
+        "version":        config.version,
+        "hybrid_search":  config.hybrid_search,
+        "hybrid_alpha":   config.hybrid_alpha,
     }
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False)
@@ -86,7 +92,9 @@ class Config:
         port: int = 8080,
         log_level: str = "info",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
-        version: str = "1.0.0-rc1",
+        version: str = "1.4.0-rc1",
+        hybrid_search: bool = True,
+        hybrid_alpha: float = 0.7,
         root: Optional[Path] = None,
     ):
         self.project_name = project_name
@@ -95,6 +103,8 @@ class Config:
         self.log_level = log_level
         self.embedding_model = embedding_model
         self.version = version
+        self.hybrid_search = hybrid_search
+        self.hybrid_alpha = hybrid_alpha
         self.root = root or Path.cwd()
 
     @property

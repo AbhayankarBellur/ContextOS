@@ -37,5 +37,5 @@ mcp.json
 
 # Eval outputs (generated, not source)
 eval/results*.json
-eval/*.json
-!eval/*.json.example
+!eval/questions.json.example
+!eval/contextos-questions.json

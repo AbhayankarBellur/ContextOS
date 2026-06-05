@@ -132,6 +132,8 @@ def assemble_context(
     project: Optional[str] = None,
     max_tokens: int = 4000,
     priority_order: Optional[list[str]] = None,
+    use_hybrid: bool = True,
+    hybrid_alpha: float = 0.7,
 ) -> ContextResponse:
     """
     Assemble a ready-to-paste context block for an agent.
@@ -153,7 +155,11 @@ def assemble_context(
         query_vector=query_vec,
         project=project,
         limit=30,
-        alpha=0.7,
+        alpha=hybrid_alpha,
+    ) if use_hybrid else store.search(
+        query_vector=query_vec,
+        project=project,
+        limit=30,
     )
 
     if not raw_results:
@@ -162,8 +168,11 @@ def assemble_context(
     # Score and sort with priority boost
     scored = []
     for r in raw_results:
-        distance = float(r.get("_distance", 1.0))
-        base_score = max(0.0, 1.0 - distance)
+        # Use RRF score if available (hybrid), else convert L2 distance
+        if "_rrf_score" in r:
+            base_score = min(float(r["_rrf_score"]) * 100, 1.0)
+        else:
+            base_score = max(0.0, 1.0 - float(r.get("_distance", 1.0)))
         doc_type = r.get("type", "note")
         priority = priority_lookup.get(doc_type, 0)
         final_score = base_score * 0.6 + (priority / len(priority_order)) * 0.4

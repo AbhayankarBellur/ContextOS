@@ -1,0 +1,58 @@
+[
+  {
+    "query": "why did we choose LanceDB as the vector store",
+    "expected_title": "ADR-001: Use LanceDB as the Embedded Vector Store",
+    "expected_type": "adr",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "what embedding model does ContextOS use and why",
+    "expected_title": "ADR-002: Use BAAI/bge-small-en-v1.5 for Embeddings",
+    "expected_type": "adr",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "zero network dependency local only operation",
+    "expected_title": "ADR-003: 100% Local — Zero Network Dependency",
+    "expected_type": "adr",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "how does hybrid BM25 vector search work RRF fusion",
+    "expected_title": "ADR-004: Hybrid Search (BM25 + Vector with RRF)",
+    "expected_type": "adr",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "PDF DOCX PPTX ingestion pipeline architecture",
+    "expected_title": "ADR-005: Pluggable Document Ingestor Pipeline",
+    "expected_type": "adr",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "how does context index work end to end pipeline steps",
+    "expected_title": "Indexing Flow (context index)",
+    "expected_type": "workflow",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "retrieval pipeline steps priority reranking token budget",
+    "expected_title": "Retrieval Pipeline",
+    "expected_type": "architecture",
+    "project": "contextos",
+    "k": 5
+  },
+  {
+    "query": "three layer architecture vault index API",
+    "expected_title": "ContextOS System Architecture",
+    "expected_type": "architecture",
+    "project": "contextos",
+    "k": 5
+  }
+]

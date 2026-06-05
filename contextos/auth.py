@@ -136,6 +136,7 @@ def check_rate_limit(
     """
     Check if this token has exceeded its rate limit.
     Sliding window: resets after RATE_LIMIT_WINDOW seconds.
+    Merges with existing token data — never overwrites request_count.
     Returns True if within limit, False if exceeded.
     """
     token_file = _token_file(tokens_dir, token.id)
@@ -158,6 +159,7 @@ def check_rate_limit(
         window_count += 1
         within_limit = window_count <= limit
 
+        # Merge — write ONLY the rate limit fields, preserve everything else
         data["rate_window_start"] = window_start
         data["rate_window_count"] = window_count
         with open(token_file, "w") as f:
@@ -165,7 +167,7 @@ def check_rate_limit(
 
         return within_limit
     except Exception:
-        return True  # fail open — don't block on rate limit errors
+        return True  # fail open
 
 
 def check_scope(token: Token, required: TokenScope) -> bool:

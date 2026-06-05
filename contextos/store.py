@@ -201,7 +201,11 @@ class VectorStore:
             limit=fetch_n,
         )
 
-        if not bm25_results or alpha <= 0.01:
+        if not bm25_results:
+            # BM25 returned nothing — fall back to vector-only results
+            return vector_results[:limit]
+
+        if alpha <= 0.01:
             return bm25_results[:limit]
 
         # --- Reciprocal Rank Fusion ---

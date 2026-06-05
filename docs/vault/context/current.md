@@ -3,61 +3,83 @@ project: contextos
 type: context
 status: approved
 owner: core-team
-updated_at: 2026-06-03
+updated_at: 2026-06-04
 tags:
   - sprint
   - current
 ---
 
-# Current State — ContextOS v1.2.0-rc1
+# Current State — ContextOS v1.4.0-rc1
 
-## Completed — v1.0 (Week 1 Foundation)
+## Completed — v1.0 (Foundation)
 
-- [x] Full schema.py — all Pydantic v2 models
-- [x] config.py, vault.py, chunker.py, embedder.py, store.py, graph.py
+- [x] schema.py, config.py, vault.py, chunker.py, embedder.py, store.py, graph.py
 - [x] retrieval.py — priority rerank, token budget, context assembly
-- [x] auth.py — ctx_ tokens, SHA-256 hash only
-- [x] api.py — FastAPI 127.0.0.1 only
+- [x] auth.py — ctx_ tokens, SHA-256 hash only, never plaintext
+- [x] api.py — FastAPI 127.0.0.1 only, Bearer token auth
 - [x] memory.py — disk breakdown, purge, archive, reset
 - [x] cli.py — 15 commands, premium Rich UI
 - [x] AGENTS.md, CLAUDE.md, Kiro hook, docs/vault
 
-## Completed — v1.1 (Week 1 Performance + Integration)
+## Completed — v1.1 (Performance + Integration)
 
-- [x] Incremental index — content hash skip (10-100x faster)
-- [x] MCP server — 6 native tools (search_knowledge, get_context, grep_codebase, read_file, get_graph, get_status)
+- [x] Incremental index — content hash skip (10-100x faster re-index)
+- [x] MCP server — 6 native tools, stdio transport
 - [x] Symbol index — Python AST + JS/TS regex (190 symbols, 17 files)
-- [x] Smart compression — sumy TF-IDF extractive, no LLM
-- [x] Live watch mode — watchfiles per-file re-index
-- [x] context context, context diff, context projects, context about, context symbols, context mcp, context setup
-- [x] Agent templates — .cursorrules, mcp.json, .continue/config.json, copilot-instructions.md
-- [x] 26/26 tests passing
+- [x] Smart compression — sumy TF-IDF, no LLM
+- [x] Live watch mode — watchfiles per-file re-index (now routes PDF/DOCX/PPTX)
+- [x] context context, context diff, context symbols, context mcp, context setup
 
-## Completed — v1.2 (Week 2 Enterprise Features)
+## Completed — v1.2 (Enterprise Features)
 
-- [x] session.py — full agent session lifecycle (create, event, end, summary, export to vault)
-- [x] connectors/ — pluggable external data sources (BaseConnector + registry)
-- [x] connectors/github.py — GitHub Issues + Wiki → vault Markdown
-- [x] connectors/openapi.py — OpenAPI/Swagger spec → architecture docs
-- [x] connectors/json_source.py — local JSON/YAML → vault docs (package.json, pyproject.toml, generic)
-- [x] dashboard.py — full-screen Textual TUI (projects, health, sessions, inline search)
-- [x] API: /session/start, /session/:id/event, /session/:id/end, /session/last, /session/active, /pull
-- [x] CLI: context session start|end|event|list|summary, context pull, context export, context dashboard
+- [x] session.py — full agent session lifecycle, vault export
+- [x] connectors/ — github, openapi, json (pluggable BaseConnector)
+- [x] dashboard.py — Textual TUI, live-refresh, inline search
+- [x] context pull, context export, context dashboard
+- [x] API: /session/*, /pull endpoints
 
-## Active Focus
+## Completed — v1.3 (Auth, Logging, Cache, Plugins, Scaffolding, CI)
 
-- Final test coverage (35+ tests)
-- AGENTS.md update for v1.2 commands
-- v1.2.0-rc1 release commit and push
+- [x] Token scopes: read | write | admin, expiry, rate limiting (1000 req/min)
+- [x] Structured logger: app.jsonl, slow.jsonl, audit.jsonl, log rotation
+- [x] Context response cache: LRU, TTL=5min, cache invalidated on index
+- [x] Plugin system: ~/.contextos/plugins/, entry_points, context plugin install
+- [x] Vault scaffolder: default, microservice, api-first templates + context vault init
+- [x] CI commands: context ci check, context ci index (JSON output, exit 0/1)
+- [x] API: /metrics, /audit, X-Request-ID headers, require_scope middleware
 
-## CLI Command Count
+## Completed — v1.4 (Hybrid Search, Ingestors, Evaluator, One-command Bootstrap)
 
-27 commands across: init, import, index, search, serve, status, graph, grep, read,
-tree, changelog, doctor, context, diff, projects, about, symbols, mcp, setup,
-session (5 sub), pull, export, dashboard, token (3 sub), memory (6 sub), cache (2 sub)
+- [x] Hybrid search: BM25 + vector + RRF (alpha=0.7 default)
+- [x] PDF ingestor (pymupdf), DOCX ingestor (python-docx), PPTX ingestor (python-pptx)
+- [x] Retrieval evaluator: Hit Rate @K, MRR, avg score, latency
+- [x] context start — one-command bootstrap (init + scaffold + import + index + token + serve)
+- [x] context eval — CLI evaluation against golden question sets
+- [x] MCP tool scope enforcement (CONTEXTOS_TOKEN per call)
+- [x] ADR-004 (hybrid search), ADR-005 (ingestors)
+- [x] eval/questions.json.example, eval/contextos-questions.json
 
-## API Endpoint Count
+## Bug Fixes Applied (v1.4.1)
 
-18 endpoints: /health, /search, /context, /graph, /documents, /watcher,
-/session/start, /session/:id/event, /session/:id/end, /session/last, /session/active,
-/pull, + v1.1 endpoints
+- [x] CRITICAL: api.py require_scope() infinite recursion fixed
+- [x] HIGH: retrieval.py assemble_context() now uses _rrf_score not _distance
+- [x] HIGH: vault.py _ingest_document() scope guard fixed, project injected correctly
+- [x] MEDIUM: auth.py check_rate_limit() merge-write (no more double-write race)
+- [x] MEDIUM: memory.py get_projects_breakdown() single table scan (no N+1)
+- [x] MEDIUM: watcher.py watches .pdf/.docx/.pptx, routes via ingestor
+- [x] MEDIUM: mcp_server.py config cached at module level (not per-call)
+- [x] MEDIUM: config.py hybrid_search + hybrid_alpha now configurable
+- [x] HIGH: schema.py SearchRequest/ContextRequest expose use_hybrid + hybrid_alpha
+
+## CLI Command Count — 30 commands
+
+init, import, index, search, serve, status, graph, grep, read, tree,
+changelog, doctor, context, diff, projects, about, symbols, mcp, setup,
+start, eval, pull, export, dashboard, logs, token×3, memory×6,
+cache×3, session×5, vault×3, plugin×2, ci×2
+
+## API Endpoint Count — 20 endpoints
+
+/health, /search, /context, /graph, /documents, /watcher, /metrics, /audit,
+/session/start, /session/:id/event, /session/:id/end, /session/last,
+/session/active, /pull

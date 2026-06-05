@@ -139,11 +139,13 @@ class AuditEntry(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    project: str
+    project: Optional[str] = None
     type: Optional[DocumentType] = None
     domain: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=20)
     include_graph: bool = False
+    use_hybrid: bool = True
+    hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class SearchResultItem(BaseModel):
@@ -164,13 +166,15 @@ class SearchResponse(BaseModel):
 
 class ContextRequest(BaseModel):
     query: str
-    project: str
+    project: Optional[str] = None
     max_tokens: int = 4000
     priority_order: list[str] = Field(
         default_factory=lambda: [
             "context", "decisions", "architecture", "domain", "workflows", "product"
         ]
     )
+    use_hybrid: bool = True
+    hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class ContextResponse(BaseModel):
