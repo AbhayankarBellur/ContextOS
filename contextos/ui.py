@@ -13,7 +13,7 @@ from rich.rule import Rule
 from rich.theme import Theme
 from rich.style import Style
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
 # ---------------------------------------------------------------------------
 # Theme — Cyan primary, Blue secondary, professional palette

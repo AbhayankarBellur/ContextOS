@@ -570,16 +570,19 @@ def create_app() -> FastAPI:
 
 
 def run_server(port: int = 8080):
-    """
-    Start uvicorn server. ALWAYS binds to 127.0.0.1.
-    Never binds to 0.0.0.0 — this is enforced here and not configurable.
-    """
+    """Start uvicorn server. ALWAYS binds to 127.0.0.1."""
     import uvicorn
+    # Warm up embedding model in background — eliminates cold-start on first search
+    try:
+        emb = get_embedder()
+        emb.warmup()
+        logger.info("Embedding model warmup started in background")
+    except Exception as exc:
+        logger.debug("Warmup skipped: %s", exc)
 
-    logger.info("Starting ContextOS API on http://127.0.0.1:%d", port)
     uvicorn.run(
         "contextos.api:app",
-        host="127.0.0.1",   # HARDCODED — never 0.0.0.0
+        host="127.0.0.1",
         port=port,
         log_level="warning",
         reload=False,

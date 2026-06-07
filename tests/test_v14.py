@@ -325,13 +325,13 @@ class TestIngestorPipeline:
 
     def test_unsupported_extension_returns_none(self):
         from contextos.ingestors import ingest
-        result = ingest(Path("file.xlsx"))
+        result = ingest(Path("file.xyz"))
         assert result is None
 
     def test_can_ingest_false_for_unknown(self):
         from contextos.ingestors import can_ingest
-        assert not can_ingest(Path("file.csv"))
-        assert not can_ingest(Path("file.xlsx"))
+        assert not can_ingest(Path("file.mp3"))
+        assert not can_ingest(Path("file.xyz"))
 
     def test_supported_extensions_list(self):
         from contextos.ingestors import supported_extensions
@@ -339,6 +339,8 @@ class TestIngestorPipeline:
         assert ".pdf"  in exts
         assert ".docx" in exts
         assert ".pptx" in exts
+        assert ".csv"  in exts
+        assert ".xlsx" in exts
 
 
 # ---------------------------------------------------------------------------
@@ -524,4 +526,4 @@ def test_scan_vault_skips_unsupported_ext(tmp_path):
         "---\nproject: test\ntype: note\nstatus: draft\n---\n# Notes\n"
     )
     docs = scan_vault(vault)
-    assert len(docs) == 1  # only the .md file
+    assert len(docs) == 2  # .md file + .csv file (now supported)

@@ -2496,6 +2496,15 @@ def proxy_start(
     Continue.dev: models[].apiBase = "http://127.0.0.1:9137"
     """
     brand_rule("proxy start")
+    try:
+        import httpx  # noqa
+    except ImportError:
+        error_panel(
+            "Missing Dependency",
+            "Proxy mode requires httpx.",
+            "pip install contextos-vault[proxy]"
+        )
+        raise typer.Exit(1)
     cfg_root = _root()
     console.print(Panel(
         f"[bold green]ContextOS Context Proxy[/bold green]\n\n"

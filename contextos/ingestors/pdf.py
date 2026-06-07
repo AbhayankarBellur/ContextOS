@@ -60,6 +60,21 @@ def extract_pdf(path: Path) -> str:
         page  = doc[page_num]
         text  = page.get_text("text").strip()
         if not text:
+            # Attempt OCR for scanned pages (requires pytesseract + tesseract)
+            try:
+                import pytesseract
+                from PIL import Image
+                import io
+                pix   = page.get_pixmap(dpi=150)
+                img   = Image.open(io.BytesIO(pix.tobytes("png")))
+                text  = pytesseract.image_to_string(img).strip()
+                if text:
+                    sections.append(f"## Page {page_num + 1} (OCR)\n\n{text}")
+                    continue
+            except ImportError:
+                pass  # tesseract not installed — skip this page silently
+            except Exception:
+                pass
             continue
         sections.append(f"## Page {page_num + 1}\n\n{text}")
 

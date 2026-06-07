@@ -213,7 +213,13 @@ async def proxy_forward(path: str, request: Request):
     Intercept all requests. For chat completion endpoints,
     process the messages. Forward everything else unchanged.
     """
-    import httpx
+    try:
+        import httpx
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="httpx not installed. Run: pip install contextos-vault[proxy]"
+        )
 
     body_bytes = await request.body()
     is_chat    = "chat/completions" in path

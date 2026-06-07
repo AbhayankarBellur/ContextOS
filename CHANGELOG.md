@@ -5,6 +5,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.0.1] — 2026-06-07 — Gap Fixes
+
+- **Proxy**: httpx moved to `contextos-vault[proxy]` optional extra
+- **Cold start**: Embedding model warm-up in background thread on server start
+- **Dashboard**: Token prompt with localStorage persistence + Change Token button
+- **CI**: macOS added to test matrix; pytest-cov coverage reporting
+- **Ingestors**: CSV and Excel (.csv, .xlsx, .xls) tabular data ingestion
+- **OCR stub**: Scanned PDF pages attempt pytesseract OCR if installed
+
+---
+
 ## [2.0.0] — 2026-06-07 — Cross-App Memory, Proxy Mode, AICF Spec
 
 ### Added — Phase 2: Cross-App User Memory Layer

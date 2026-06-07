@@ -55,6 +55,10 @@
 <header>
   <h1>⬡ ContextOS</h1>
   <span><span class="live-dot"></span>Live · <span id="last-update">—</span></span>
+  <button onclick="localStorage.removeItem('contextos_token');location.reload()" 
+          style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px;margin-left:12px">
+    Change Token
+  </button>
 </header>
 
 <div class="search-bar">
@@ -127,7 +131,12 @@
 </div>
 
 <script>
-const TOKEN = document.cookie.split(';').find(c=>c.includes('ctx_token'))?.split('=')[1] || '';
+// Get token from localStorage or prompt user
+let TOKEN = localStorage.getItem('contextos_token') || '';
+if (!TOKEN) {
+  TOKEN = prompt('Enter your ContextOS token (ctx_...):') || '';
+  if (TOKEN) localStorage.setItem('contextos_token', TOKEN);
+}
 
 function fmt(n) {
   if (n >= 1e9) return (n/1e9).toFixed(1)+'GB';

@@ -61,4 +61,4 @@ def supported_extensions() -> list[str]:
 
 
 # Register built-in ingestors on import
-from contextos.ingestors import pdf, docx, pptx   # noqa: E402, F401
+from contextos.ingestors import pdf, docx, pptx, csv_excel   # noqa: E402, F401

@@ -108,6 +108,17 @@ class Embedder:
         results = self.embed([text])
         return results[0] if results else []
 
+    def warmup(self) -> None:
+        """Pre-load the embedding model in a background thread to eliminate cold-start latency."""
+        import threading
+        def _load():
+            try:
+                self._load_model()
+            except Exception as exc:
+                logger.debug("Warmup failed: %s", exc)
+        t = threading.Thread(target=_load, daemon=True, name="ContextOS-EmbedderWarmup")
+        t.start()
+
 
 def embed_chunks_with_progress(
     chunks_by_doc: dict,  # doc_id -> list[Chunk]
