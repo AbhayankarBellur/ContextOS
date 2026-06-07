@@ -14,13 +14,15 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path as _Path
 
 from contextos.schema import (
     SearchRequest, SearchResponse, ContextRequest, ContextResponse,
     HealthResponse, DocumentType, TokenScope,
+    WriteMemoryRequest, QueryMemoryRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,7 @@ def get_graph():
 app = FastAPI(
     title="ContextOS",
     description="Local-first knowledge OS for AI coding agents",
-    version="1.3.0-rc1",
+    version="2.0.0-rc1",
     docs_url="/docs",
     redoc_url=None,
 )
@@ -172,7 +174,7 @@ def require_scope(required: TokenScope):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health", response_model=None)
 def health(deep: bool = Query(False, description="Run a live search to verify end-to-end")):
     """Health check. ?deep=true runs a sample search to verify retrieval works."""
     store     = get_store()
@@ -192,11 +194,11 @@ def health(deep: bool = Query(False, description="Run a live search to verify en
         return {
             "status":       "ok" if retrieval_ok else "degraded",
             "indexed":      doc_count,
-            "version":      "1.3.0-rc1",
+            "version":      "2.0.0-rc1",
             "retrieval_ok": retrieval_ok,
         }
 
-    return HealthResponse(status="ok", indexed=doc_count, version="1.3.0-rc1")
+    return HealthResponse(status="ok", indexed=doc_count, version="2.0.0-rc1")
 
 
 @app.get("/metrics")
@@ -355,6 +357,17 @@ def list_documents(
     return {"documents": docs, "count": len(docs)}
 
 
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard_ui():
+    """Serve the ContextOS web dashboard. No auth required (localhost only)."""
+    from fastapi.responses import HTMLResponse as _HR
+    static_file = Path(__file__).parent / "static" / "dashboard.html"
+    if static_file.exists():
+        return _HR(content=static_file.read_text(encoding="utf-8"))
+    return _HR(content="<h1>ContextOS Dashboard</h1><p>Static file missing.</p>", status_code=404)
+
 # ---------------------------------------------------------------------------
 # Watcher status
 # ---------------------------------------------------------------------------
@@ -428,6 +441,92 @@ def session_active_ep(_token=Depends(require_scope(TokenScope.read))):
     from contextos.session import get_active_session
     cfg = get_config()
     return {"session": get_active_session(cfg.contextos_dir / "sessions")}
+
+
+# ---------------------------------------------------------------------------
+# Pull endpoint
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# User Memory endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/memory/write")
+def memory_write(
+    request: WriteMemoryRequest,
+    _token=Depends(require_scope(TokenScope.write)),
+):
+    """Write a memory fragment for a user. Cross-app: any client can write."""
+    from contextos.user_memory import write_fragment
+    cfg = get_config()
+    memory_dir = cfg.contextos_dir / "memory"
+    embedder   = get_embedder()
+    fragment   = write_fragment(
+        memory_dir      = memory_dir,
+        user_id         = request.user_id,
+        content         = request.content,
+        fragment_type   = request.type.value,
+        importance      = request.importance,
+        source_client   = request.source_client,
+        project         = request.project,
+        tags            = request.tags,
+        supersedes_id   = request.supersedes_id,
+    )
+    return {"fragment_id": fragment["id"], "user_id": fragment["user_id"]}
+
+
+@app.post("/memory/query")
+def memory_query(
+    request: QueryMemoryRequest,
+    _token=Depends(require_scope(TokenScope.read)),
+):
+    """Query memory fragments for a user. Ranked by importance × decay × similarity."""
+    from contextos.user_memory import query_fragments
+    cfg      = get_config()
+    embedder = get_embedder()
+    results  = query_fragments(
+        memory_dir       = cfg.contextos_dir / "memory",
+        user_id          = request.user_id,
+        query            = request.query,
+        embedder         = embedder,
+        project          = request.project,
+        fragment_type    = request.type.value if request.type else None,
+        limit            = request.limit,
+        min_importance   = request.min_importance,
+        include_superseded = request.include_superseded,
+    )
+    return {"fragments": results, "count": len(results)}
+
+
+@app.get("/memory/stats")
+def memory_stats(
+    user_id: str = Query(...),
+    _token=Depends(require_scope(TokenScope.read)),
+):
+    """Return memory statistics for a user."""
+    from contextos.user_memory import get_stats
+    cfg = get_config()
+    return get_stats(cfg.contextos_dir / "memory", user_id)
+
+
+@app.get("/memory/users")
+def memory_users(_token=Depends(require_scope(TokenScope.admin))):
+    """List all user_ids with stored memory. Admin scope."""
+    from contextos.user_memory import list_users
+    cfg = get_config()
+    return {"users": list_users(cfg.contextos_dir / "memory")}
+
+
+@app.delete("/admin/memory")
+def memory_delete_user(
+    user_id: str = Query(...),
+    _token=Depends(require_scope(TokenScope.admin)),
+):
+    """GDPR bulk delete: remove all memory for a user. Admin scope."""
+    from contextos.user_memory import delete_user_memory
+    cfg = get_config()
+    return delete_user_memory(cfg.contextos_dir / "memory", user_id)
 
 
 # ---------------------------------------------------------------------------

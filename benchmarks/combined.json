@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-06-07T18:49:33",
+  "questions_file": "eval\\questions.json.example",
+  "question_count": 5,
+  "vector": {
+    "total": 5,
+    "hit_rate": 1.0,
+    "mrr": 1.0,
+    "avg_top1_score": 0.5369,
+    "no_result_pct": 0.0,
+    "avg_latency_ms": 4385.8
+  },
+  "hybrid": {
+    "total": 5,
+    "hit_rate": 1.0,
+    "mrr": 1.0,
+    "avg_top1_score": 1.0,
+    "no_result_pct": 0.0,
+    "avg_latency_ms": 36.6
+  }
+}

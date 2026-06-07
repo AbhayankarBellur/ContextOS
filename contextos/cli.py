@@ -2270,6 +2270,293 @@ def cache_stats():
     console.print(); console.print(t)
 
 
+# ── user memory commands ──────────────────────────────────────────────────────
+
+umem_app = typer.Typer(help="Cross-app user memory — write and query persistent user knowledge")
+app.add_typer(umem_app, name="memory-user")
+
+@umem_app.command("write")
+def umem_write(
+    user_id:   str = typer.Argument(..., help="User identifier (email, username, UUID)"),
+    content:   str = typer.Argument(..., help="Memory content to store"),
+    mem_type:  str = typer.Option("fact", "--type", "-t", help="fact|preference|decision|event"),
+    importance:int = typer.Option(3, "--importance", "-i", help="1-5 (5=critical)"),
+    source:    str = typer.Option("user", "--source", help="Source client name"),
+    project:   Optional[str] = typer.Option(None, "--project", "-p"),
+    supersedes:Optional[str] = typer.Option(None, "--supersedes", help="Fragment ID this replaces"),
+):
+    """Store a memory fragment for a user. Persists across all AI coding sessions."""
+    from contextos.user_memory import write_fragment
+    from contextos.embedder import Embedder
+    brand_rule("memory-user write")
+    cfg = _cfg()
+    embedder = Embedder(cfg.embeddings_dir)
+    fragment = write_fragment(
+        memory_dir=cfg.contextos_dir / "memory",
+        user_id=user_id, content=content, fragment_type=mem_type,
+        importance=importance, source_client=source,
+        project=project, supersedes_id=supersedes,
+    )
+    t = Table(show_header=False, box=box.SIMPLE, padding=(0,1))
+    t.add_column("k", style="dim", width=14); t.add_column("v", style="bold")
+    t.add_row("ID",        fragment["id"])
+    t.add_row("User",      fragment["user_id"])
+    t.add_row("Type",      fragment["type"])
+    t.add_row("Importance", str(fragment["importance"]) + "/5")
+    t.add_row("Source",    fragment["source_client"])
+    console.print(Panel(t, title=f"[success]{ICONS['success']} Memory Stored[/success]",
+                        border_style="green", padding=(0,2)))
+
+
+@umem_app.command("query")
+def umem_query(
+    user_id:    str = typer.Argument(...),
+    query:      str = typer.Argument(...),
+    mem_type:   Optional[str] = typer.Option(None, "--type", "-t"),
+    limit:      int = typer.Option(10, "--limit", "-n"),
+    project:    Optional[str] = typer.Option(None, "--project", "-p"),
+    min_imp:    int = typer.Option(1, "--min-importance"),
+):
+    """Query memory fragments for a user, ranked by importance × decay × similarity."""
+    from contextos.user_memory import query_fragments
+    from contextos.embedder import Embedder
+    brand_rule("memory-user query")
+    cfg = _cfg()
+    embedder = Embedder(cfg.embeddings_dir)
+
+    with console.status(f"[cyan]{ICONS['spin']} Querying memory…[/cyan]"):
+        results = query_fragments(
+            memory_dir=cfg.contextos_dir / "memory",
+            user_id=user_id, query=query, embedder=embedder,
+            project=project, fragment_type=mem_type,
+            limit=limit, min_importance=min_imp,
+        )
+
+    if not results:
+        empty_state(f"No memory found for user '{user_id}'",
+                    f'context memory-user write {user_id} "your memory here"')
+        return
+
+    t = Table(title=f"[bold]Memory for {user_id}[/bold]  [dim]{query}[/dim]",
+              box=box.ROUNDED, border_style="cyan")
+    t.add_column("Type", style="cyan", width=12)
+    t.add_column("Content", min_width=40)
+    t.add_column("Imp", justify="center", width=5)
+    t.add_column("Score", justify="right", width=8)
+    t.add_column("Decay", justify="right", width=7, style="dim")
+    t.add_column("Source", style="dim", width=12)
+
+    for r in results:
+        score = r.get("_score", 0)
+        decay = r.get("_decay", 1)
+        sc = f"[{score_style(score)}]{score:.3f}[/{score_style(score)}]"
+        t.add_row(r.get("type",""), r.get("content","")[:55],
+                  str(r.get("importance",3)), sc, f"{decay:.2f}", r.get("source_client",""))
+
+    console.print(); console.print(t)
+
+
+@umem_app.command("list")
+def umem_list(user_id: str = typer.Argument(...)):
+    """List all memory fragments for a user."""
+    from contextos.user_memory import _read_fragments_from_file
+    brand_rule("memory-user list")
+    cfg = _cfg()
+    fragments = _read_fragments_from_file(cfg.contextos_dir / "memory", user_id)
+    active = [f for f in fragments if f.get("active", True)]
+    if not active:
+        empty_state(f"No memory for '{user_id}'", f"context memory-user write {user_id} \"...\"")
+        return
+    t = Table(title=f"[bold]Memory — {user_id}[/bold]  [dim]{len(active)} fragments[/dim]",
+              box=box.ROUNDED, border_style="cyan")
+    t.add_column("ID", style="dim", width=18, no_wrap=True)
+    t.add_column("Type", style="cyan", width=12)
+    t.add_column("Imp", width=5, justify="center")
+    t.add_column("Content", min_width=40)
+    t.add_column("Created", style="dim", width=12)
+    for fr in active:
+        t.add_row(fr["id"], fr.get("type",""), str(fr.get("importance",3)),
+                  fr.get("content","")[:60], fr.get("created_at","")[:10])
+    console.print(); console.print(t)
+
+
+@umem_app.command("stats")
+def umem_stats(user_id: str = typer.Argument(...)):
+    """Show memory statistics for a user."""
+    from contextos.user_memory import get_stats
+    brand_rule("memory-user stats")
+    cfg = _cfg()
+    stats = get_stats(cfg.contextos_dir / "memory", user_id)
+    t = Table(show_header=False, box=box.ROUNDED, border_style="cyan", min_width=40, padding=(0,1))
+    t.add_column("k", style="dim", width=20); t.add_column("v", style="bold")
+    t.add_row("User ID",         stats["user_id"])
+    t.add_row("Total fragments", str(stats["total_fragments"]))
+    t.add_row("Active",          f"[green]{stats['active_fragments']}[/green]")
+    t.add_row("Superseded",      f"[dim]{stats['superseded']}[/dim]")
+    t.add_row("Oldest",          str(stats.get("oldest","—"))[:10])
+    t.add_row("Newest",          str(stats.get("newest","—"))[:10])
+    console.print(Panel(t, title=f"[bold]User Memory Stats[/bold]", border_style="cyan"))
+    if stats.get("by_type"):
+        console.print("\n[bold]By type:[/bold]")
+        for mtype, count in sorted(stats["by_type"].items(), key=lambda x: -x[1]):
+            console.print(f"  [cyan]{mtype:<14}[/cyan] {count}")
+
+
+@umem_app.command("delete")
+def umem_delete(
+    user_id: str = typer.Argument(...),
+    confirm: bool = typer.Option(False, "--yes", "-y"),
+):
+    """GDPR bulk delete: remove ALL memory for a user permanently."""
+    from contextos.user_memory import delete_user_memory
+    cfg = _cfg()
+    if not confirm:
+        warn(f"This permanently deletes ALL memory for user [bold]{user_id}[/bold].")
+        typer.confirm("Proceed?", abort=True)
+    with console.status(f"[cyan]{ICONS['spin']} Deleting memory for {user_id}…[/cyan]"):
+        result = delete_user_memory(cfg.contextos_dir / "memory", user_id)
+    ok(f"Deleted [bold]{result['deleted_fragments']}[/bold] fragments for {user_id}")
+
+
+# ── context suggest ───────────────────────────────────────────────────────────
+
+@app.command("suggest")
+def cmd_suggest(
+    task: str = typer.Argument(..., help="Task description to get suggestions for"),
+    project: Optional[str] = typer.Option(None, "--project", "-p"),
+    limit: int = typer.Option(5, "--limit", "-n"),
+):
+    """
+    Suggest implementation approaches based on past decisions in vault + session history.
+    Queries ADRs, workflows, and session decisions for similar tasks.
+    """
+    from contextos.embedder import Embedder
+    from contextos.store import VectorStore
+    brand_rule("suggest")
+    cfg = _cfg()
+
+    with console.status(f"[cyan]{ICONS['spin']} Searching past decisions…[/cyan]"):
+        embedder = Embedder(cfg.embeddings_dir)
+        store    = VectorStore(cfg.lancedb_dir)
+        qv       = embedder.embed_query(task)
+
+        # Search ADRs and context docs
+        adrs = store.search(query_vector=qv, project=project, type_filter="adr", limit=3)
+        ctx  = store.search(query_vector=qv, project=project, type_filter="context", limit=2)
+        all_results = adrs + ctx
+
+    if not all_results:
+        empty_state("No past decisions found.", "context index  # then try again")
+        return
+
+    console.print(f"\n[bold]Suggestions for:[/bold] [cyan]\"{task}\"[/cyan]\n")
+
+    # Past decisions
+    if adrs:
+        console.print("[bold]Past Architecture Decisions:[/bold]")
+        for r in adrs:
+            score = max(0.0, 1.0 - float(r.get("_distance", 1)))
+            snippet = r.get("content","")[:200].replace("\n"," ")
+            console.print(Panel(
+                f"[dim]{r.get('heading','')}[/dim]\n\n{snippet}…\n\n[dim]{r.get('filepath','')}[/dim]",
+                title=f"[magenta]{r.get('title','')}[/magenta]  [dim]{score:.2f}[/dim]",
+                border_style="magenta", padding=(0,1)
+            ))
+
+    # Approach suggestions (A/B/C from context)
+    if ctx:
+        console.print("\n[bold]Relevant Context:[/bold]")
+        for r in ctx:
+            snippet = r.get("content","")[:150].replace("\n"," ")
+            console.print(f"  [cyan]{ICONS['bullet']}[/cyan] [dim]{r.get('title','')}:[/dim] {snippet}…")
+
+    next_action("context session event <id> decision_made \"<your choice>\"",
+                "Log your decision so future sessions can learn from it")
+
+
+# ── proxy commands ────────────────────────────────────────────────────────────
+
+proxy_app_typer = typer.Typer(help="Context proxy — sit between IDE and LLM, auto-compress context")
+app.add_typer(proxy_app_typer, name="proxy")
+
+@proxy_app_typer.command("start")
+def proxy_start(
+    target: str = typer.Option("https://api.openai.com", "--target", "-t",
+                                help="LLM API to proxy to"),
+    port:   int = typer.Option(9137, "--port", help="Local proxy port"),
+    project:Optional[str] = typer.Option(None, "--project", "-p"),
+):
+    """
+    Start the ContextOS context proxy on 127.0.0.1:9137.
+
+    Point your IDE API base URL to http://127.0.0.1:9137 instead of the LLM directly.
+    The proxy will auto-compress old context turns and inject vault knowledge.
+
+    Cursor:  Settings → API Base URL → http://127.0.0.1:9137/v1
+    Continue.dev: models[].apiBase = "http://127.0.0.1:9137"
+    """
+    brand_rule("proxy start")
+    cfg_root = _root()
+    console.print(Panel(
+        f"[bold green]ContextOS Context Proxy[/bold green]\n\n"
+        f"  [dim]Listening:[/dim]  [bold]http://127.0.0.1:{port}[/bold]\n"
+        f"  [dim]Target:[/dim]     [bold]{target}[/bold]\n"
+        f"  [dim]Project:[/dim]    [bold]{project or 'all'}[/bold]\n\n"
+        f"  [dim]IDE config:[/dim]\n"
+        f"    API Base URL → [cyan]http://127.0.0.1:{port}/v1[/cyan]\n\n"
+        f"  [dim]What the proxy does:[/dim]\n"
+        f"  [dim]• HOT (last 5 turns) — kept verbatim[/dim]\n"
+        f"  [dim]• WARM (turns 6-15) — kept verbatim[/dim]\n"
+        f"  [dim]• COLD (older turns) — compressed with TF-IDF[/dim]\n"
+        f"  [dim]• DEAD (duplicates/empty) — dropped silently[/dim]\n"
+        f"  [dim]• Vault context injected before each request[/dim]\n\n"
+        f"  [dim yellow]Ctrl+C to stop[/dim yellow]",
+        title="[bold]ContextOS Proxy[/bold]", border_style="cyan", padding=(0,2)
+    ))
+    from contextos.proxy import run_proxy
+    run_proxy(port=port, target=target, project=project, vault_root=cfg_root)
+
+
+@proxy_app_typer.command("status")
+def proxy_status(port: int = typer.Option(9137, "--port")):
+    """Show proxy statistics — tokens saved, turn classifications."""
+    import socket
+    brand_rule("proxy status")
+    try:
+        s = socket.socket(); s.settimeout(0.5)
+        running = s.connect_ex(("127.0.0.1", port)) == 0
+        s.close()
+    except Exception:
+        running = False
+
+    if not running:
+        empty_state(f"Proxy not running on port {port}.",
+                    f"context proxy start --port {port}")
+        return
+
+    try:
+        import urllib.request as _ur
+        data = json.loads(_ur.urlopen(f"http://127.0.0.1:{port}/proxy/stats", timeout=2).read())
+        t = Table(show_header=False, box=box.ROUNDED, border_style="cyan", padding=(0,1))
+        t.add_column("k", style="dim", width=22); t.add_column("v", style="bold")
+        t.add_row("Status",          "[green]running[/green]")
+        t.add_row("Total requests",  str(data.get("requests", 0)))
+        t.add_row("Total tokens saved", f"{data.get('tokens_saved_total',0):,}")
+        console.print(Panel(t, title="[bold]Proxy Status[/bold]", border_style="cyan"))
+
+        sessions = data.get("sessions", [])[-5:]
+        if sessions:
+            console.print("\n[bold]Recent sessions:[/bold]")
+            for s in sessions:
+                heat = s.get("heat", {})
+                console.print(f"  [{s['ts']}] saved={s.get('saved',0)} tokens "
+                              f"({s.get('compression',0)}%) "
+                              f"HOT={heat.get('hot',0)} WARM={heat.get('warm',0)} "
+                              f"COLD={heat.get('cold',0)} DEAD={heat.get('dead',0)}")
+    except Exception as exc:
+        warn(f"Could not read proxy stats: {exc}")
+
+
 # ── cache commands ────────────────────────────────────────────────────────────
 
 @cache_app.command("ls")

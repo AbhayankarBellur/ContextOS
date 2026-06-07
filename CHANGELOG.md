@@ -5,7 +5,62 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [1.5.0] — 2026-06-04 — First Stable Release 🎉
+## [2.0.0] — 2026-06-07 — Cross-App Memory, Proxy Mode, AICF Spec
+
+### Added — Phase 2: Cross-App User Memory Layer
+
+- **`contextos/user_memory.py`** — persistent user memory across all LLM clients
+  - `user_id` as universal key — Alice's preferences readable by any agent
+  - Fragment types: `fact | preference | decision | event`
+  - Importance scoring (1-5) + exponential time decay (halves every 30 days)
+  - Fragment versioning: `superseded_by_id` self-reference
+  - GDPR bulk delete: `DELETE /admin/memory?user_id=`
+  - JSONL persistence: `.contextos/memory/<user_id>.jsonl`
+- **API endpoints**: `POST /memory/write`, `POST /memory/query`, `GET /memory/stats`,
+  `GET /memory/users`, `DELETE /admin/memory`
+- **CLI**: `context memory-user write|query|list|stats|delete`
+
+### Added — Phase 3: Context Proxy Mode
+
+- **`contextos/proxy.py`** — HOT/WARM/COLD/DEAD turn classification
+  - HOT (last 5): kept verbatim
+  - WARM (6-15): kept verbatim
+  - COLD (older): compressed with sumy TF-IDF extractive summarisation
+  - DEAD (duplicates/empty): dropped silently
+  - Vault context injected before each request automatically
+  - Tracks tokens saved per session
+- **CLI**: `context proxy start --target https://api.openai.com --port 9137`
+- **CLI**: `context proxy status` — live stats with heat classification counts
+
+### Added — Phase 4: Task Continuity
+
+- **`context suggest "<task>"`** — queries vault for past ADRs and decisions on similar tasks,
+  returns A/B/C alternatives based on retrieved context
+
+### Added — Phase 5: Web Dashboard
+
+- **`contextos/static/dashboard.html`** — zero-dependency HTML dashboard
+  - Live metrics: index health, graph stats, disk usage
+  - Proxy token savings feed with heat classification
+  - Inline search — type and see results without leaving dashboard
+  - Auto-refresh every 5 seconds
+- **`GET /dashboard`** — served by API server (no auth, localhost only)
+
+### Added — Phase 1: Benchmarks + AICF Spec
+
+- **`benchmarks/`** — measured retrieval results (not marketing claims):
+  - Hybrid avg top-1 score: **1.000** vs vector-only **0.537** (+86%)
+  - Hybrid latency: **37ms** vs vector-only **4,386ms** (-119x)
+- **`docs/AICF-SPEC.md`** — Agent Intelligence Context Format v1.0 open specification
+  - ContextOS vault format published as open standard
+  - Any tool can read a vault without ContextOS installed
+  - User memory fragment format included
+
+### Tests: 233 total (199 existing + 34 new v2.0)
+
+---
+
+## [1.5.0] — 2026-06-04
 
 **Published to PyPI as [`contextos-vault`](https://pypi.org/project/contextos-vault/)**
 

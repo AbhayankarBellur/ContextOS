@@ -1,0 +1,154 @@
+{
+  "summary": {
+    "total": 5,
+    "hit_rate": 1.0,
+    "mrr": 1.0,
+    "avg_top1_score": 1.0,
+    "no_result_pct": 0.0,
+    "avg_latency_ms": 36.6
+  },
+  "results": [
+    {
+      "query": "how does payment retry work",
+      "expected_title": "Payment Domain Model",
+      "hit": true,
+      "rank": 1,
+      "top1_score": 1.0,
+      "latency_ms": 65,
+      "top_results": [
+        {
+          "title": "Payment Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Payment Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Payment Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Domain Model",
+          "score": 1.0
+        }
+      ]
+    },
+    {
+      "query": "booking cancellation policy",
+      "expected_title": "Booking Flow",
+      "hit": true,
+      "rank": 1,
+      "top1_score": 1.0,
+      "latency_ms": 34,
+      "top_results": [
+        {
+          "title": "Booking Flow",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Flow",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Flow",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Flow",
+          "score": 1.0
+        }
+      ]
+    },
+    {
+      "query": "why did we choose postgres",
+      "expected_title": "ADR-001: Use PostgreSQL as Primary Database",
+      "hit": true,
+      "rank": 1,
+      "top1_score": 1.0,
+      "latency_ms": 31,
+      "top_results": [
+        {
+          "title": "ADR-001: Use PostgreSQL as Primary Database",
+          "score": 1.0
+        },
+        {
+          "title": "ADR-001: Use PostgreSQL as Primary Database",
+          "score": 1.0
+        },
+        {
+          "title": "ADR-001: Use PostgreSQL as Primary Database",
+          "score": 1.0
+        },
+        {
+          "title": "ADR-002: Use Domain Events for Booking Lifecycle",
+          "score": 1.0
+        },
+        {
+          "title": "ADR-002: Use Domain Events for Booking Lifecycle",
+          "score": 1.0
+        }
+      ]
+    },
+    {
+      "query": "booking domain entities and fields",
+      "expected_title": "Booking Domain Model",
+      "hit": true,
+      "rank": 1,
+      "top1_score": 1.0,
+      "latency_ms": 27,
+      "top_results": [
+        {
+          "title": "Booking Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Booking Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Payment Domain Model",
+          "score": 1.0
+        },
+        {
+          "title": "Payment Domain Model",
+          "score": 1.0
+        }
+      ]
+    },
+    {
+      "query": "current sprint tasks and blockers",
+      "expected_title": "Current Sprint",
+      "hit": true,
+      "rank": 1,
+      "top1_score": 1.0,
+      "latency_ms": 26,
+      "top_results": [
+        {
+          "title": "Current Sprint \u2014 Sprint 12 (June 2\u201313, 2026)",
+          "score": 1.0
+        },
+        {
+          "title": "Current Sprint \u2014 Sprint 12 (June 2\u201313, 2026)",
+          "score": 1.0
+        },
+        {
+          "title": "Current Sprint \u2014 Sprint 12 (June 2\u201313, 2026)",
+          "score": 1.0
+        },
+        {
+          "title": "Current Sprint \u2014 Sprint 12 (June 2\u201313, 2026)",
+          "score": 1.0
+        }
+      ]
+    }
+  ]
+}

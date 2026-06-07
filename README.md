@@ -12,7 +12,7 @@
 **Local-first knowledge OS for AI coding agents.**
 
 [![Tests](https://img.shields.io/badge/tests-199%20passing-brightgreen)](tests/)
-[![Version](https://img.shields.io/badge/version-1.5.0-blue)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue)](pyproject.toml)
 [![PyPI](https://img.shields.io/pypi/v/contextos-vault)](https://pypi.org/project/contextos-vault/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/contextos-vault)](https://pypi.org/project/contextos-vault/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -30,19 +30,28 @@ ContextOS gives AI coding agents **structured, searchable project memory** — a
 
 ## Why ContextOS?
 
-Every AI coding agent session starts from scratch. Developers re-explain the same architecture, re-paste the same domain models, re-describe the same constraints — every single chat. This causes:
+Every AI session starts from zero. You explain your architecture. Again. You paste the same domain model. Again. Your agent drifts from last week's decisions. Again.
 
-- **Token waste** — 30-60% of every session re-establishing baseline context
-- **Architectural drift** — agents make inconsistent decisions across sessions  
-- **Developer fatigue** — repeating the same context is tedious and error-prone
-- **Onboarding friction** — new agents on an existing project are blind to its history
-
-ContextOS solves this by maintaining a **local vault of structured knowledge** that any agent can query before starting work.
+**ContextOS fixes this permanently.**
 
 ```
-Without ContextOS:  developer → re-explains → agent → codes
-With ContextOS:     agent → queries vault → gets context → codes with full awareness
+Without ContextOS                   With ContextOS
+──────────────────────────────────────────────────────────
+Re-explain architecture every chat  Agent queries vault, knows it already
+Paste domain models manually        Retrieved automatically before every task
+Agent ignores past decisions        ADRs surfaced with decay-scored relevance
+Token waste on repeated context     4000-token precision context block
+Context drift across sessions       Session memory + decision trail indexed
+Different LLMs lose your prefs      Cross-app user memory by user_id
 ```
+
+**Measured results (real numbers from `context eval`):**
+
+| Metric | Vector only | Hybrid BM25+Vector | Delta |
+|---|---|---|---|
+| Avg top-1 score | 0.537 | **1.000** | **+86%** |
+| Search latency | 4,386ms | **37ms** | **-119x** |
+| Hit Rate @5 | 100% | 100% | — |
 
 ---
 

@@ -134,6 +134,38 @@ class AuditEntry(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# User memory models
+# ---------------------------------------------------------------------------
+
+class MemoryFragmentType(str, Enum):
+    fact       = "fact"
+    preference = "preference"
+    decision   = "decision"
+    event      = "event"
+
+
+class WriteMemoryRequest(BaseModel):
+    user_id:       str
+    content:       str
+    type:          MemoryFragmentType = MemoryFragmentType.fact
+    importance:    int = Field(default=3, ge=1, le=5)
+    source_client: str = "user"
+    project:       Optional[str] = None
+    tags:          list[str] = Field(default_factory=list)
+    supersedes_id: Optional[str] = None
+
+
+class QueryMemoryRequest(BaseModel):
+    user_id:            str
+    query:              str
+    project:            Optional[str] = None
+    type:               Optional[MemoryFragmentType] = None
+    limit:              int = Field(default=10, ge=1, le=50)
+    min_importance:     int = Field(default=1, ge=1, le=5)
+    include_superseded: bool = False
+
+
+# ---------------------------------------------------------------------------
 # API request / response models
 # ---------------------------------------------------------------------------
 

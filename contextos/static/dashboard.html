@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ContextOS Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --cyan: #58a6ff; --green: #3fb950; --yellow: #d29922;
+    --red: #f85149; --muted: #8b949e; --text: #e6edf3;
+    --border: #30363d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; }
+  header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { color: var(--cyan); font-size: 18px; letter-spacing: 0.5px; }
+  header span { color: var(--muted); font-size: 12px; }
+  .live-dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; padding: 20px 24px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .card h3 { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  .metric { font-size: 32px; font-weight: bold; color: var(--cyan); }
+  .metric-sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--muted); }
+  .stat-value { color: var(--text); font-weight: bold; }
+  .green { color: var(--green); }
+  .yellow { color: var(--yellow); }
+  .red { color: var(--red); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 2px; }
+  .tag-hot  { background: #3fb95022; color: var(--green); }
+  .tag-warm { background: #d2992222; color: var(--yellow); }
+  .tag-cold { background: #58a6ff22; color: var(--cyan); }
+  .tag-dead { background: #f8514922; color: var(--red); }
+  .feed { max-height: 200px; overflow-y: auto; }
+  .feed-item { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .feed-item:last-child { border-bottom: none; }
+  .feed-time { color: var(--muted); margin-right: 8px; }
+  .search-bar { padding: 0 24px 20px; }
+  .search-bar input { width: 100%; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; color: var(--text); font-family: inherit; font-size: 13px; outline: none; }
+  .search-bar input:focus { border-color: var(--cyan); }
+  #search-results { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; margin-top: 8px; max-height: 300px; overflow-y: auto; }
+  .result-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .result-item:hover { background: var(--bg3); }
+  .result-title { color: var(--cyan); font-weight: bold; }
+  .result-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .result-snippet { font-size: 12px; margin-top: 4px; line-height: 1.5; }
+  #no-results { padding: 14px; color: var(--muted); display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⬡ ContextOS</h1>
+  <span><span class="live-dot"></span>Live · <span id="last-update">—</span></span>
+</header>
+
+<div class="search-bar">
+  <input type="text" id="search-input" placeholder="/ to search vault… (type and press Enter)" />
+  <div id="search-results" style="display:none">
+    <div id="no-results">No results found.</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>📦 Index</h3>
+    <div class="metric" id="doc-count">—</div>
+    <div class="metric-sub">documents indexed</div>
+    <div style="margin-top:12px">
+      <div class="stat-row"><span class="stat-label">Chunks</span><span class="stat-value" id="chunk-count">—</span></div>
+      <div class="stat-row"><span class="stat-label">Last indexed</span><span class="stat-value" id="last-indexed">—</span></div>
+      <div class="stat-row"><span class="stat-label">Model</span><span class="stat-value" id="model-name">—</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>◎ Server</h3>
+    <div class="metric" id="server-status" style="font-size:20px">—</div>
+    <div style="margin-top:12px">
+      <div class="stat-row"><span class="stat-label">Total requests</span><span class="stat-value" id="total-requests">—</span></div>
+      <div class="stat-row"><span class="stat-label">Avg latency</span><span class="stat-value" id="avg-latency">—</span></div>
+      <div class="stat-row"><span class="stat-label">Cache hit rate</span><span class="stat-value green" id="cache-hits">—</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>⬡ Graph</h3>
+    <div class="metric" id="graph-nodes">—</div>
+    <div class="metric-sub">nodes</div>
+    <div style="margin-top:12px">
+      <div class="stat-row"><span class="stat-label">Edges</span><span class="stat-value" id="graph-edges">—</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>▣ Disk</h3>
+    <div class="metric" id="disk-size">—</div>
+    <div class="metric-sub">.contextos/</div>
+    <div style="margin-top:12px">
+      <div class="stat-row"><span class="stat-label">Embeddings</span><span class="stat-value" id="disk-embeddings">—</span></div>
+      <div class="stat-row"><span class="stat-label">LanceDB</span><span class="stat-value" id="disk-lancedb">—</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card" style="grid-column: span 2">
+    <h3>⟳ Proxy Token Savings</h3>
+    <div style="display:flex;gap:32px;margin-bottom:12px">
+      <div><div class="metric green" id="tokens-saved">—</div><div class="metric-sub">tokens saved (session)</div></div>
+      <div><div class="metric" id="proxy-requests">—</div><div class="metric-sub">proxy requests</div></div>
+    </div>
+    <div class="feed" id="proxy-feed">
+      <div style="color:var(--muted);padding:8px 0">No proxy sessions yet. Start with: context proxy start</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>⬛ Registered Vaults</h3>
+    <div class="feed" id="vault-list">
+      <div style="color:var(--muted);padding:8px 0">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN = document.cookie.split(';').find(c=>c.includes('ctx_token'))?.split('=')[1] || '';
+
+function fmt(n) {
+  if (n >= 1e9) return (n/1e9).toFixed(1)+'GB';
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'MB';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'KB';
+  return n+'B';
+}
+
+async function api(path, opts={}) {
+  try {
+    const r = await fetch(path, {headers:{'Authorization':'Bearer '+TOKEN}, ...opts});
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+async function refresh() {
+  const health  = await api('/health?deep=false');
+  const metrics = await api('/metrics');
+  const graph   = await api('/graph');
+
+  if (health) {
+    document.getElementById('doc-count').textContent     = health.indexed ?? '—';
+    document.getElementById('server-status').innerHTML   = '<span class="green">● Running</span>';
+    document.getElementById('last-indexed').textContent  = (health.last_indexed||'—').substring(0,16);
+    document.getElementById('model-name').textContent    = 'bge-small-en-v1.5';
+  } else {
+    document.getElementById('server-status').innerHTML = '<span class="red">● Offline</span>';
+  }
+
+  if (metrics) {
+    document.getElementById('total-requests').textContent = metrics.total_requests ?? '—';
+    document.getElementById('avg-latency').textContent    = (metrics.avg_latency_ms||0)+'ms';
+    const cache = metrics.cache;
+    if (cache) {
+      document.getElementById('cache-hits').textContent  = cache.hit_rate_pct+'%';
+      document.getElementById('chunk-count').textContent = cache.size+' cached';
+    }
+  }
+
+  if (graph && graph.summary) {
+    document.getElementById('graph-nodes').textContent = graph.summary.nodes ?? '—';
+    document.getElementById('graph-edges').textContent = (graph.summary.edges||0)+' edges';
+  }
+
+  // Proxy stats
+  try {
+    const ps = await fetch('http://127.0.0.1:9137/proxy/stats');
+    if (ps.ok) {
+      const pd = await ps.json();
+      document.getElementById('tokens-saved').textContent   = (pd.tokens_saved_total||0).toLocaleString();
+      document.getElementById('proxy-requests').textContent = pd.requests||0;
+      const feed = document.getElementById('proxy-feed');
+      const sessions = (pd.sessions||[]).slice(-8).reverse();
+      if (sessions.length) {
+        feed.innerHTML = sessions.map(s => {
+          const h = s.heat||{};
+          return `<div class="feed-item">
+            <span class="feed-time">${s.ts}</span>
+            <span class="green">-${s.saved} tokens</span>
+            <span style="margin-left:8px">
+              <span class="tag tag-hot">HOT ${h.hot||0}</span>
+              <span class="tag tag-warm">WARM ${h.warm||0}</span>
+              <span class="tag tag-cold">COLD ${h.cold||0}</span>
+              <span class="tag tag-dead">DEAD ${h.dead||0}</span>
+            </span>
+          </div>`;
+        }).join('');
+      }
+    }
+  } catch {}
+
+  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+}
+
+// Search
+const searchInput = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+
+searchInput.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  const q = searchInput.value.trim();
+  if (!q) { searchResults.style.display='none'; return; }
+
+  searchResults.style.display='block';
+  document.getElementById('no-results').style.display='none';
+  searchResults.innerHTML = '<div style="padding:12px;color:var(--muted)">Searching…</div>';
+
+  const data = await api('/search', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':'Bearer '+TOKEN},
+    body: JSON.stringify({query:q, limit:8})
+  });
+
+  if (!data || !data.results || !data.results.length) {
+    searchResults.innerHTML = '<div id="no-results" style="padding:14px;color:var(--muted)">No results found.</div>';
+    return;
+  }
+
+  searchResults.innerHTML = data.results.map(r => {
+    const score = r.score || 0;
+    const scoreColor = score >= 0.8 ? 'var(--green)' : score >= 0.6 ? 'var(--yellow)' : 'var(--red)';
+    return `<div class="result-item">
+      <div class="result-title">${r.title} <span style="color:${scoreColor};font-size:11px">${score.toFixed(2)}</span></div>
+      <div class="result-meta">${r.type}${r.domain?' · '+r.domain:''} · ${r.filepath.split(/[\\/]/).pop()}</div>
+      <div class="result-snippet">${(r.chunk||'').substring(0,200).replace(/\n/g,' ')}…</div>
+    </div>`;
+  }).join('');
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === '/') { e.preventDefault(); searchInput.focus(); }
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
