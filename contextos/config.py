@@ -23,9 +23,10 @@ DEFAULT_CONFIG = {
     "port": 8080,
     "log_level": "info",
     "embedding_model": "BAAI/bge-small-en-v1.5",
-    "version": "1.4.0-rc1",
+    "version": "1.5.0-rc1",
     "hybrid_search": True,
     "hybrid_alpha": 0.7,
+    "embedding_dim": 384,
 }
 
 
@@ -61,6 +62,7 @@ def load_config(root: Optional[Path] = None) -> "Config":
         version=data.get("version", "1.4.0-rc1"),
         hybrid_search=bool(data.get("hybrid_search", True)),
         hybrid_alpha=float(data.get("hybrid_alpha", 0.7)),
+        embedding_dim=int(data.get("embedding_dim", 384)),
         root=root or Path.cwd(),
     )
 
@@ -77,6 +79,7 @@ def save_config(config: "Config") -> None:
         "version":        config.version,
         "hybrid_search":  config.hybrid_search,
         "hybrid_alpha":   config.hybrid_alpha,
+        "embedding_dim":  config.embedding_dim,
     }
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False)
@@ -95,6 +98,7 @@ class Config:
         version: str = "1.4.0-rc1",
         hybrid_search: bool = True,
         hybrid_alpha: float = 0.7,
+        embedding_dim: int = 384,
         root: Optional[Path] = None,
     ):
         self.project_name = project_name
@@ -105,6 +109,7 @@ class Config:
         self.version = version
         self.hybrid_search = hybrid_search
         self.hybrid_alpha = hybrid_alpha
+        self.embedding_dim = embedding_dim
         self.root = root or Path.cwd()
 
     @property

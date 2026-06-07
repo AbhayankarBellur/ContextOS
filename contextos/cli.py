@@ -414,11 +414,16 @@ def cmd_serve(
 
     # Start file watcher if requested
     if watch and cfg.vault_paths:
-        from contextos.watcher import start_watcher
-        start_watcher(cfg)
-
-    from contextos.api import run_server
-    run_server(port=port)
+        from contextos.watcher import start_watcher, stop_watcher
+        watcher = start_watcher(cfg)
+        try:
+            from contextos.api import run_server
+            run_server(port=port)
+        finally:
+            watcher.stop()
+    else:
+        from contextos.api import run_server
+        run_server(port=port)
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -440,7 +445,8 @@ def cmd_status():
     srv = False
     try:
         s=socket.socket(); s.settimeout(0.5); srv=s.connect_ex(("127.0.0.1",cfg.port))==0; s.close()
-    except: pass
+    except Exception:
+        pass
 
     t = Table(show_header=False, box=box.ROUNDED, border_style="cyan", min_width=52, padding=(0,1))
     t.add_column("k", style="dim", width=22); t.add_column("v", style="bold")
@@ -755,8 +761,8 @@ def cmd_grep(
                         if obj.get("type") == "match":
                             m = obj["data"]
                             matches.append({"file":m["path"]["text"],"line":m["line_number"],"content":m["lines"]["text"].rstrip()})
-                    except: pass
-            except: rg_ok = False
+                    except Exception: pass
+            except Exception: rg_ok = False
 
         if not rg_ok:
             flags = 0 if literal else re_mod.IGNORECASE
@@ -771,7 +777,7 @@ def cmd_grep(
                         if (pattern in line) if literal else bool(re_mod.search(pattern, line, flags)):
                             matches.append({"file":str(f),"line":i+1,"content":line.rstrip()})
                             if len(matches)>=limit: break
-                except: pass
+                except Exception: pass
                 if len(matches)>=limit: break
 
     latency_ms = int((time.time()-t0)*1000)
@@ -813,6 +819,31 @@ def cmd_read(
     import hashlib
     fp = Path(filepath).resolve()
     if not fp.exists(): error_panel("File Not Found", str(fp)); raise typer.Exit(1)
+
+    # Path containment check - prevent directory traversal
+    root = _root()
+    cfg_exists = (root / ".contextos").exists()
+    if cfg_exists:
+        try:
+            from contextos.config import load_config
+            cfg = load_config(root)
+            allowed_roots = cfg.vault_paths + [root]
+            # Check if file is within any allowed root
+            contained = any(
+                fp == allowed or fp.is_relative_to(allowed)
+                for allowed in allowed_roots
+            )
+            if not contained:
+                error_panel(
+                    "Access Denied",
+                    f"File is outside registered vault paths",
+                    f"Allowed roots: {', '.join(str(p) for p in allowed_roots[:3])}"
+                )
+                raise typer.Exit(1)
+        except (ImportError, typer.Exit):
+            raise
+        except Exception:
+            pass  # If containment check fails, allow read (fail open for usability)
 
     content = fp.read_text(encoding="utf-8", errors="ignore")
     all_lines = content.splitlines(); total = len(all_lines)

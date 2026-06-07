@@ -47,6 +47,13 @@ def generate_token(
     """
     tokens_dir.mkdir(parents=True, exist_ok=True)
 
+    import stat
+    import os
+    try:
+        tokens_dir.chmod(stat.S_IRWXU)  # 0700 - owner only
+    except OSError:
+        pass  # Windows doesn't support this - silently ignore
+
     raw_token = TOKEN_PREFIX + secrets.token_hex(16)
     token_id  = TOKEN_PREFIX + secrets.token_hex(8)
 

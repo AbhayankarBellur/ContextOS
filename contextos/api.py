@@ -113,6 +113,7 @@ async def request_middleware(request: Request, call_next):
 
     try:
         cfg    = get_config()
+        from contextos.logger import get_logger
         logger = get_logger(cfg.logs_dir)
         logger.log_request(
             request_id  = request_id,
@@ -122,8 +123,9 @@ async def request_middleware(request: Request, call_next):
             token_id    = None,
             status_code = response.status_code,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug("Request logging failed: %s", exc)
 
     return response
 

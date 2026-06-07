@@ -31,6 +31,7 @@ class Embedder:
         self.cache_dir = cache_dir
         self.model_name = model_name
         self._model = None
+        self.dim = 384
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_model(self) -> None:
@@ -64,6 +65,15 @@ class Embedder:
         logger.info("Loading model '%s' (downloading if needed)…", self.model_name)
         with contextlib.redirect_stderr(io.StringIO()):
             self._model = SentenceTransformer(self.model_name)
+
+        # Store actual embedding dimension
+        try:
+            self.dim = self._model.get_embedding_dimension()
+        except AttributeError:
+            try:
+                self.dim = self._model.get_sentence_embedding_dimension()
+            except Exception:
+                self.dim = 384
 
         # Save a local copy for explicit offline tracking
         try:

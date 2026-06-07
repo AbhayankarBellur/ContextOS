@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contextos"
-version = "1.4.0rc1"
+version = "1.5.0rc1"
 description = "Local-first knowledge OS for AI coding agents"
 readme = "README.md"
 license = { file = "LICENSE" }

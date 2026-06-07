@@ -47,6 +47,7 @@ class VectorStore:
         self.lancedb_dir.mkdir(parents=True, exist_ok=True)
         self._db = None
         self._table = None
+        self._bm25_cache = None
 
     def _open(self):
         """Lazy-open LanceDB connection."""
@@ -87,13 +88,16 @@ class VectorStore:
         from lancedb.pydantic import Vector
         import pyarrow as pa
 
+        # Detect dim from first chunk embedding
+        dim = len(ready[0].embedding) if ready else 384
+
         # Build schema
         schema = pa.schema([
             pa.field("id", pa.utf8()),
             pa.field("doc_id", pa.utf8()),
             pa.field("heading", pa.utf8()),
             pa.field("content", pa.utf8()),
-            pa.field("embedding", pa.list_(pa.float32(), 384)),
+            pa.field("embedding", pa.list_(pa.float32(), dim)),
             pa.field("token_count", pa.int32()),
             pa.field("project", pa.utf8()),
             pa.field("type", pa.utf8()),
@@ -109,15 +113,27 @@ class VectorStore:
             logger.info("Created LanceDB table '%s' with %d chunks", TABLE_NAME, len(records))
         else:
             table = self._db.open_table(TABLE_NAME)
-            # Delete existing chunks for these doc_ids to allow re-index
+            # Delete existing chunks for these doc_ids to allow re-index (batch delete)
             doc_ids = list({c.doc_id for c in ready})
-            for doc_id in doc_ids:
+            if doc_ids:
+                quoted = "', '".join(doc_ids)
                 try:
-                    table.delete(f"doc_id = '{doc_id}'")
-                except Exception:
-                    pass
+                    table.delete(f"doc_id IN ('{quoted}')")
+                except Exception as exc:
+                    logger.debug("Batch delete failed, trying individual: %s", exc)
+                    for doc_id in doc_ids:
+                        try:
+                            table.delete(f"doc_id = '{doc_id}'")
+                        except Exception:
+                            pass
             table.add(records)
             logger.info("Upserted %d chunks to LanceDB", len(records))
+
+        # Rebuild BM25 index after upsert
+        try:
+            self.build_bm25_index()
+        except Exception as exc:
+            logger.debug("BM25 index rebuild failed after upsert: %s", exc)
 
         return len(records)
 
@@ -211,6 +227,46 @@ class VectorStore:
         # --- Reciprocal Rank Fusion ---
         return self._rrf_merge(vector_results, bm25_results, limit=limit, alpha=alpha)
 
+    def build_bm25_index(self) -> None:
+        """Build BM25 index from current LanceDB content and cache to disk."""
+        import pickle
+        table = self._get_table()
+        if table is None:
+            return
+        try:
+            from rank_bm25 import BM25Okapi
+            df = table.to_pandas()
+            corpus = df["content"].fillna("").tolist()
+            tokenised = [doc.lower().split() for doc in corpus]
+            bm25 = BM25Okapi(tokenised)
+            # Store doc_ids alongside for result mapping
+            cols = [c for c in ["id","doc_id","title","type","domain","project","filepath","heading","content","status","tags"] if c in df.columns]
+            cache = {"bm25": bm25, "doc_data": df[cols].to_dict(orient="records")}
+            cache_path = self.lancedb_dir.parent / "cache" / "bm25.pkl"
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "wb") as f:
+                pickle.dump(cache, f)
+            self._bm25_cache = cache
+            logger.info("BM25 index built and cached (%d docs)", len(corpus))
+        except Exception as exc:
+            logger.debug("BM25 cache build failed: %s", exc)
+
+    def _load_bm25_cache(self) -> Optional[dict]:
+        """Load BM25 cache from disk. Returns None if not available."""
+        if hasattr(self, "_bm25_cache") and self._bm25_cache is not None:
+            return self._bm25_cache
+        import pickle
+        cache_path = self.lancedb_dir.parent / "cache" / "bm25.pkl"
+        if not cache_path.exists():
+            return None
+        try:
+            with open(cache_path, "rb") as f:
+                self._bm25_cache = pickle.load(f)
+            return self._bm25_cache
+        except Exception as exc:
+            logger.debug("BM25 cache load failed: %s", exc)
+            return None
+
     def _bm25_search(
         self,
         query_text: str,
@@ -219,7 +275,52 @@ class VectorStore:
         domain_filter: Optional[str] = None,
         limit: int = 20,
     ) -> list[dict]:
-        """BM25 keyword search over chunk content using rank_bm25."""
+        """BM25 keyword search using cached index."""
+        cache = self._load_bm25_cache()
+        if cache is None:
+            # Fall back to building from DB
+            return self._bm25_search_live(query_text, project, type_filter, domain_filter, limit)
+
+        try:
+            import numpy as np
+            bm25 = cache["bm25"]
+            doc_data = cache["doc_data"]
+
+            scores = bm25.get_scores(query_text.lower().split())
+
+            # Apply filters
+            filtered = []
+            for i, (score, row) in enumerate(zip(scores, doc_data)):
+                if score <= 0:
+                    continue
+                if project and row.get("project") != project:
+                    continue
+                if type_filter and row.get("type") != type_filter:
+                    continue
+                if domain_filter and row.get("domain") != domain_filter:
+                    continue
+                filtered.append((score, row))
+
+            filtered.sort(key=lambda x: -x[0])
+            results = []
+            for score, row in filtered[:limit]:
+                r = dict(row)
+                r["_bm25_score"] = float(score)
+                results.append(r)
+            return results
+        except Exception as exc:
+            logger.debug("BM25 cached search failed: %s", exc)
+            return []
+
+    def _bm25_search_live(
+        self,
+        query_text: str,
+        project: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        domain_filter: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """BM25 keyword search over chunk content using rank_bm25 (live, no cache)."""
         table = self._get_table()
         if table is None:
             return []
