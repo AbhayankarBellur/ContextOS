@@ -1,0 +1,32 @@
+# Include all Markdown and YAML template files shipped with the package
+recursive-include contextos/templates *.md *.yaml *.json
+
+# Include eval example files (not results)
+include eval/questions.json.example
+include eval/contextos-questions.json
+
+# Include documentation
+include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+include LICENSE
+include AGENTS.md
+include CLAUDE.md
+
+# Include example vault for new users
+recursive-include examples *.md
+
+# Include agent integration templates
+include mcp.json.example
+include .cursorrules
+recursive-include .continue *.json
+recursive-include .kiro/hooks *.json
+recursive-include .github/copilot-instructions.md *
+
+# Exclude generated and dev files
+exclude .contextos
+recursive-exclude .contextos *
+recursive-exclude __pycache__ *
+recursive-exclude *.egg-info *
+exclude .pytest_cache
