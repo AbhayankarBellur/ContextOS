@@ -5,6 +5,20 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.5.0] — 2026-06-04 — First Stable Release 🎉
+
+**Published to PyPI as [`contextos-vault`](https://pypi.org/project/contextos-vault/)**
+
+```bash
+pip install contextos-vault
+context start
+```
+
+This is the first stable release. All features from v1.0 through v1.5.0rc1 are included.
+No code changes from rc1 — version bump only after verifying end-to-end PyPI installation.
+
+---
+
 ## [1.5.0rc1] — 2026-06-04
 
 ### Added — Production Maturity

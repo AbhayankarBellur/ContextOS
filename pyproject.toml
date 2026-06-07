@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contextos-vault"
-version = "1.5.0rc1"
+version = "1.5.0"
 description = "Local-first knowledge OS for AI coding agents — hybrid search, MCP server, multi-format vault (pip install contextos-vault)"
 readme = "README.md"
 license = { file = "LICENSE" }

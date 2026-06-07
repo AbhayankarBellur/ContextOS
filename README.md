@@ -12,7 +12,9 @@
 **Local-first knowledge OS for AI coding agents.**
 
 [![Tests](https://img.shields.io/badge/tests-199%20passing-brightgreen)](tests/)
-[![Version](https://img.shields.io/badge/version-1.5.0--rc1-blue)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue)](pyproject.toml)
+[![PyPI](https://img.shields.io/pypi/v/contextos-vault)](https://pypi.org/project/contextos-vault/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/contextos-vault)](https://pypi.org/project/contextos-vault/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 
@@ -70,6 +72,10 @@ With ContextOS:     agent → queries vault → gets context → codes with full
 ## Quickstart — One Command
 
 ```bash
+# Install from PyPI
+pip install contextos-vault
+
+# OR clone and install from source
 git clone https://github.com/AbhayankarBellur/ContextOS.git
 cd ContextOS
 pip install -e .
@@ -115,12 +121,18 @@ context serve
 **Requirements:** Python 3.11+
 
 ```bash
-# Clone and install
-git clone https://github.com/AbhayankarBellur/ContextOS.git
-cd ContextOS
-pip install -e .
+# Install from PyPI (recommended)
+pip install contextos-vault
 
 # Verify
+context doctor
+```
+
+**Or install from source (for development / contributions):**
+```bash
+git clone https://github.com/AbhayankarBellur/ContextOS.git
+cd ContextOS
+pip install -e ".[dev]"
 context doctor
 ```
 
